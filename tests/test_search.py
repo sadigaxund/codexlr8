@@ -14,7 +14,9 @@ class TestHelpers:
         assert _tokenize("") == []
         assert _tokenize("login auth") == ["login", "auth"]
         assert _tokenize("CamelCase_123 snake_case") == ["camelcase_123", "snake_case"]
-        assert _tokenize("x = 1 + 2") == ["x"]
+        assert _tokenize("Phase 28") == ["phase", "28"]
+        assert _tokenize("x = 1 + 2") == ["1", "2"]  # single letters filtered
+        assert _tokenize("go API v2") == ["go", "api", "v2"]  # 2-letter keeps
 
     def test_matches_exclude(self):
         assert _matches_exclude("tests/test_auth.py", ["tests/*"])

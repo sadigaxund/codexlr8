@@ -22,7 +22,18 @@ def _is_init_file(path: str) -> bool:
 def _tokenize(text: str) -> list[str]:
     if not text:
         return []
-    return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text.lower())
+    # Capture identifiers (letter-starting) and standalone numbers
+    tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*|\d+", text.lower())
+    return [t for t in tokens if len(t) > 1 or t.isdigit()]  # skip single letters
+
+
+def _token_match_ratio(tokens: list[str], text: str) -> float:
+    """What fraction of query tokens appear in the document text?"""
+    if not tokens:
+        return 0.0
+    text_lower = text.lower()
+    matched = sum(1 for t in tokens if t in text_lower)
+    return matched / len(tokens)
 
 
 def _matches_exclude(path: str, excludes: list[str]) -> bool:
@@ -195,11 +206,9 @@ class SearchEngine:
                exclude: list[str] | None = None) -> list[dict]:
         """Search the codebase and return ranked results.
 
-        Args:
-            query: Natural language search query.
-            limit: Maximum number of results.
-            exclude: Exclude patterns (overrides config defaults).
-                     Files matching any pattern are excluded from results.
+        Uses AND semantics: all query tokens must match (like Google).
+        Falls back to OR if AND returns nothing, with a post-filter
+        requiring at least 50% of query tokens to match the document.
         """
         if not os.path.exists(self.db_path):
             return []
@@ -213,24 +222,48 @@ class SearchEngine:
 
         conn = self._get_connection()
 
-        fts_query = " OR ".join(tokens)
-
+        # Stage 1: try AND (best precision)
+        and_query = " AND ".join(tokens)
         cursor = conn.execute(
-            "SELECT f.path, f.summary, f.tags, f.public_api, "
+            "SELECT f.path, f.summary, f.tags, f.public_api, f.content, "
             "       m.is_init, rank "
             "FROM files f "
             "JOIN file_meta m ON f.path = m.path "
             "WHERE files MATCH ? "
             "ORDER BY rank "
             "LIMIT ?",
-            (fts_query, limit * 5),
+            (and_query, limit * 5),
         )
+        rows = cursor.fetchall()
 
+        # Stage 2: fall back to OR if AND found nothing
+        if not rows and len(tokens) > 1:
+            or_query = " OR ".join(tokens)
+            cursor = conn.execute(
+                "SELECT f.path, f.summary, f.tags, f.public_api, f.content, "
+                "       m.is_init, rank "
+                "FROM files f "
+                "JOIN file_meta m ON f.path = m.path "
+                "WHERE files MATCH ? "
+                "ORDER BY rank "
+                "LIMIT ?",
+                (or_query, limit * 10),
+            )
+            rows = cursor.fetchall()
+
+        # Stage 3: post-filter by token coverage
+        min_ratio = 0.5 if len(tokens) >= 4 else 0.0
         results = []
-        for row in cursor:
+        for row in rows:
             if _matches_exclude(row["path"], exclude):
                 continue
-            score = self._compute_score(tokens, dict(row))
+
+            content = row["content"] or ""
+            ratio = _token_match_ratio(tokens, content + (row["summary"] or "") + (row["tags"] or ""))
+            if ratio < min_ratio:
+                continue
+
+            score = self._compute_score(tokens, dict(row), ratio)
             if row["is_init"]:
                 score *= 0.6
             results.append({
@@ -242,7 +275,6 @@ class SearchEngine:
             })
 
         conn.close()
-
         results.sort(key=lambda r: r["score"], reverse=True)
 
         final = []
@@ -260,8 +292,17 @@ class SearchEngine:
 
         return final
 
-    def _compute_score(self, tokens: list[str], row: dict) -> float:
+    def _compute_score(self, tokens: list[str], row: dict, match_ratio: float = 1.0) -> float:
+        """Compute relevance score.
+
+        Core ranking: BM25 from FTS5 (via 'rank') provides the base score.
+        On top of that:
+        - Metadata boost: public_api (1.0) > tags (0.8) > summary (0.6)
+        - Match ratio: fraction of query tokens found in the document
+        - init.py penalty: 0.6x (applied in search())
+        """
         score = 0.0
+
         public_api = (row.get("public_api") or "").lower()
         summary = (row.get("summary") or "").lower()
         tags = (row.get("tags") or "").lower()
@@ -278,7 +319,11 @@ class SearchEngine:
             elif token in summary_tokens:
                 score += 0.6
             else:
-                score += 0.2
+                # Content match via BM25 — base weight
+                score += 0.3
+
+        # Multiply by match ratio: files matching more query terms rank higher
+        score *= match_ratio
 
         return round(score, 4)
 

@@ -10,18 +10,15 @@ You have access to a codebase search engine called CodeXLR8. It is a purpose-bui
 
 ## How to search
 
-Use `codebase_search` with short, keyword-focused queries (2-4 words):
+Use `codebase_search` with the key nouns and terms from the task description:
 
 ```
-codebase_search(query="login auth", path=".")
-codebase_search(query="stripe charge customer", path=".")
-codebase_search(query="shopping cart checkout", path=".")
+codebase_search(query="login auth")
+codebase_search(query="stripe charge customer refund")
+codebase_search(query="shopping cart checkout payment")
 ```
 
-**Tips:**
-- Keep queries short — 2-4 words is ideal.
-- Use terms from the task description, not from the code (you haven't seen the code yet).
-- If results aren't what you need, try synonyms: "verify" / "validate" / "authenticate".
+Describe what you're looking for in natural language. The engine uses AND semantics — more terms increase precision, not noise. No need to limit to a specific number of words.
 
 ## Interpreting results
 
@@ -122,8 +119,8 @@ Exclude patterns are globs that match file paths. Use `*` for wildcards, avoid `
 
 | Task | Tool call |
 |---|---|
-| Find code for a feature | `codebase_search(query="...", path=".")` |
-| Build/update index | `codebase_index(path=".", incremental=true)` |
+| Find code for a feature | `codebase_search(query="...")` |
+| Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |
 | Rebuild full index | Shell: `codexlr8 index .` |

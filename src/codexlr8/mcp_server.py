@@ -24,19 +24,19 @@ async def list_tools() -> list[Tool]:
                 "Returns ranked results with file paths, line numbers, "
                 "relevance scores, metadata descriptions, and code previews. "
                 "Use this BEFORE reading any files to find the right code. "
-                "Query tips: use 2-4 keywords related to the task "
-                '(e.g. "login auth", "payment stripe charge", "cart checkout").'
+                "Describe what you're looking for — more terms increase precision. "
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural language search query, 2-4 keywords",
+                        "description": "Natural language search query",
                     },
                     "path": {
                         "type": "string",
-                        "description": "Path to the project root to search in",
+                        "description": "Path to the project root (default: current directory)",
+                        "default": ".",
                     },
                     "limit": {
                         "type": "integer",
@@ -50,7 +50,7 @@ async def list_tools() -> list[Tool]:
                                        "Uses .codexlr8.yaml defaults if not set.",
                     },
                 },
-                "required": ["query", "path"],
+                "required": ["query"],
             },
         ),
         Tool(
@@ -65,7 +65,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the project root",
+                        "description": "Path to the project root (default: current directory)",
+                        "default": ".",
                     },
                     "incremental": {
                         "type": "boolean",
@@ -78,7 +79,7 @@ async def list_tools() -> list[Tool]:
                         "description": "Glob patterns for files to exclude",
                     },
                 },
-                "required": ["path"],
+                "required": [],
             },
         ),
     ]
@@ -94,7 +95,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def _handle_search(args: dict) -> list[TextContent]:
-    project_path = os.path.abspath(args["path"])
+    project_path = os.path.abspath(args.get("path", "."))
     query = args["query"]
     limit = args.get("limit", 10)
     exclude = args.get("exclude")
@@ -125,7 +126,7 @@ async def _handle_search(args: dict) -> list[TextContent]:
 
 
 async def _handle_index(args: dict) -> list[TextContent]:
-    project_path = os.path.abspath(args["path"])
+    project_path = os.path.abspath(args.get("path", "."))
     incremental = args.get("incremental", False)
     exclude = args.get("exclude")
 
