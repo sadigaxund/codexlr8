@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .meta import META_EXTENSION, read_meta
 from .scanner import scan_project
@@ -14,13 +14,6 @@ INDEX_DB_NAME = ".codexlr8_index.db"
 
 
 def _is_test_file(path: str) -> bool:
-    """Check if a file path looks like a test file.
-
-    Matches:
-    - files in a 'tests/', 'test/', 'spec/', or '__tests__/' directory
-    - files whose name starts with 'test_' or ends with '_test'
-    """
-    # Directory-based patterns
     for pattern in [
         r"(^|[/\\])tests?([/\\]|$)",
         r"(^|[/\\])spec([/\\]|$)",
@@ -28,14 +21,9 @@ def _is_test_file(path: str) -> bool:
     ]:
         if re.search(pattern, path):
             return True
-
-    # Filename-based patterns
     basename = os.path.basename(path)
-    name, ext = os.path.splitext(basename)
-    if name.startswith("test_") or name.endswith("_test"):
-        return True
-
-    return False
+    name, _ = os.path.splitext(basename)
+    return name.startswith("test_") or name.endswith("_test")
 
 
 def _is_init_file(path: str) -> bool:
@@ -43,7 +31,6 @@ def _is_init_file(path: str) -> bool:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Split text into lowercase word tokens for matching."""
     if not text:
         return []
     return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text.lower())
@@ -63,77 +50,148 @@ class SearchEngine:
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
-    def build_index(self) -> int:
-        """Build the full search index from scratch.
+    def build_index(self, incremental: bool = False) -> int:
+        """Build the full search index.
 
-        Scans project files, reads content + .meta.yaml fields,
-        inserts everything into FTS5. Returns number of files indexed.
+        If incremental=True, only re-index files that have changed
+        since the last index build. New files are added, deleted files
+        are removed.
+
+        Returns number of files indexed (added/updated in incremental mode).
         """
         files_data = scan_project(self.project_path)
         conn = self._get_connection()
 
-        conn.execute("DROP TABLE IF EXISTS files")
+        if not incremental:
+            conn.execute("DROP TABLE IF EXISTS files")
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS files USING fts5(
+                    path,
+                    summary,
+                    tags,
+                    public_api,
+                    content,
+                    tokenize='porter unicode61'
+                )
+            """)
+            conn.execute("DROP TABLE IF EXISTS file_meta")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS file_meta (
+                    path TEXT PRIMARY KEY,
+                    content_size INTEGER,
+                    has_meta BOOLEAN,
+                    is_test BOOLEAN,
+                    is_init BOOLEAN,
+                    file_mtime REAL,
+                    index_built_at TEXT
+                )
+            """)
+
+        # Ensure tables exist (incremental mode may use existing tables)
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS files USING fts5(
-                path,
-                summary,
-                tags,
-                public_api,
-                content,
+                path, summary, tags, public_api, content,
                 tokenize='porter unicode61'
             )
         """)
-
-        conn.execute("DROP TABLE IF EXISTS file_meta")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS file_meta (
                 path TEXT PRIMARY KEY,
                 content_size INTEGER,
                 has_meta BOOLEAN,
                 is_test BOOLEAN,
-                is_init BOOLEAN
+                is_init BOOLEAN,
+                file_mtime REAL,
+                index_built_at TEXT
             )
         """)
 
-        count = 0
-        for entry in files_data:
-            path = entry["path"]
-            content = entry.get("content", "")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            abspath = os.path.join(self.project_path, path)
-            meta = read_meta(abspath + META_EXTENSION) or {}
-
-            summary = meta.get("summary", "")
-            tags = " ".join(meta.get("tags", []))
-            public_api = " ".join(meta.get("public_api", []))
-
-            conn.execute(
-                "INSERT INTO files (path, summary, tags, public_api, content) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (path, summary, tags, public_api, content),
-            )
-
-            line_count = content.count('\n')
-            if content and not content.endswith('\n'):
-                line_count += 1
-
-            conn.execute(
-                "INSERT OR REPLACE INTO file_meta (path, content_size, has_meta, is_test, is_init) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (path, line_count, bool(meta), _is_test_file(path), _is_init_file(path)),
-            )
-            count += 1
+        if incremental:
+            count = self._incremental_update(conn, files_data, now)
+        else:
+            count = self._full_rebuild(conn, files_data, now)
 
         conn.commit()
         conn.close()
         return count
 
-    def search(self, query: str, include_tests: bool = False, limit: int = 10) -> list[dict]:
-        """Search the codebase and return ranked results.
+    def _full_rebuild(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> int:
+        conn.execute("DELETE FROM files")
+        conn.execute("DELETE FROM file_meta")
 
-        Returns list of result dicts with path, line_start, line_end,
-        summary, tags, score, and preview snippet.
-        """
+        count = 0
+        for entry in files_data:
+            self._index_file(conn, entry, now)
+            count += 1
+        return count
+
+    def _incremental_update(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> int:
+        # Get current file paths and their mtimes
+        current_files: dict[str, float] = {}
+        file_data_map: dict[str, dict] = {}
+        for entry in files_data:
+            abspath = os.path.join(self.project_path, entry["path"])
+            mtime = os.path.getmtime(abspath)
+            current_files[entry["path"]] = mtime
+            file_data_map[entry["path"]] = entry
+
+        # Get indexed file paths
+        indexed = conn.execute("SELECT path, file_mtime FROM file_meta").fetchall()
+        indexed_map = {row["path"]: row["file_mtime"] for row in indexed}
+
+        count = 0
+
+        # Remove deleted files
+        removed = set(indexed_map) - set(current_files)
+        for path in removed:
+            conn.execute("DELETE FROM files WHERE path = ?", (path,))
+            conn.execute("DELETE FROM file_meta WHERE path = ?", (path,))
+            count += 1  # count removals as "changes"
+
+        # Add new files or update changed files
+        for path, mtime in current_files.items():
+            if path not in indexed_map or mtime > indexed_map[path]:
+                self._index_file(conn, file_data_map[path], now, replace=True)
+                count += 1
+
+        return count
+
+    def _index_file(self, conn: sqlite3.Connection, entry: dict, now: str, replace: bool = False):
+        path = entry["path"]
+        content = entry.get("content", "")
+
+        abspath = os.path.join(self.project_path, path)
+        meta = read_meta(abspath + META_EXTENSION) or {}
+        mtime = os.path.getmtime(abspath)
+
+        summary = meta.get("summary", "")
+        tags = " ".join(meta.get("tags", []))
+        public_api = " ".join(meta.get("public_api", []))
+
+        if replace:
+            conn.execute("DELETE FROM files WHERE path = ?", (path,))
+
+        conn.execute(
+            "INSERT INTO files (path, summary, tags, public_api, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (path, summary, tags, public_api, content),
+        )
+
+        line_count = content.count('\n')
+        if content and not content.endswith('\n'):
+            line_count += 1
+
+        conn.execute(
+            "INSERT OR REPLACE INTO file_meta "
+            "(path, content_size, has_meta, is_test, is_init, file_mtime, index_built_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (path, line_count, bool(meta), _is_test_file(path), _is_init_file(path),
+             mtime, now),
+        )
+
+    def search(self, query: str, include_tests: bool = False, limit: int = 10) -> list[dict]:
         if not os.path.exists(self.db_path):
             return []
 
@@ -145,7 +203,6 @@ class SearchEngine:
 
         fts_query = " OR ".join(tokens)
 
-        # Fetch more than limit for re-ranking
         cursor = conn.execute(
             "SELECT f.path, f.summary, f.tags, f.public_api, "
             "       m.is_test, m.is_init, rank "
@@ -192,16 +249,6 @@ class SearchEngine:
         return final
 
     def _compute_score(self, tokens: list[str], row: dict) -> float:
-        """Compute custom relevance score.
-
-        Ranking weights:
-        - match in public_api:  1.0  (strongest signal)
-        - match in tags:        0.8
-        - match in summary:     0.6
-        - match in content:     base BM25 from FTS5
-        - test penalty:         0.5x (applied in search())
-        - __init__.py penalty:  0.6x
-        """
         score = 0.0
 
         public_api = (row.get("public_api") or "").lower()
@@ -220,19 +267,11 @@ class SearchEngine:
             elif token in summary_tokens:
                 score += 0.6
             else:
-                # Content match via FTS5 — give a base boost for each token
                 score += 0.2
 
         return round(score, 4)
 
     def _get_preview(self, relpath: str, tokens: list[str]) -> tuple[str, tuple[int, int]]:
-        """Read the source file and extract a relevant preview snippet.
-
-        Finds the line with the most token matches and returns a window
-        around it as the preview.
-
-        Returns (preview_text, (line_start, line_end)).
-        """
         filepath = os.path.join(self.project_path, relpath)
         if not os.path.exists(filepath):
             return "", (0, 0)
@@ -262,7 +301,6 @@ class SearchEngine:
         return snippet, (start + 1, end)
 
     def status(self) -> dict:
-        """Return index state and file coverage."""
         result = {
             "project_path": self.project_path,
             "files_indexed": 0,

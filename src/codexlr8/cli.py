@@ -74,11 +74,16 @@ def search(project_path: str, query: str, include_tests: bool, output_format: st
 
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False))
-def index(project_path: str):
+@click.option("--incremental", "-i", is_flag=True, default=False,
+              help="Only re-index files that have changed since last build")
+def index(project_path: str, incremental: bool):
     """Build the full search index for a project."""
     engine = SearchEngine(project_path)
-    count = engine.build_index()
-    click.echo(f"Indexed {count} files.")
+    count = engine.build_index(incremental=incremental)
+    if incremental:
+        click.echo(f"Incrementally updated {count} files.")
+    else:
+        click.echo(f"Indexed {count} files.")
 
 
 @main.command()

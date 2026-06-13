@@ -186,6 +186,55 @@ class TestCLIIndexAndStatus:
         assert result.exit_code == 0
         assert "Indexed" in result.output
 
+    def test_index_incremental(self, sample_project):
+        from click.testing import CliRunner
+        from codexlr8.cli import index
+
+        runner = CliRunner()
+        # Full build first
+        runner.invoke(index, [str(sample_project)])
+        # Incremental should find no changes
+        result = runner.invoke(index, [str(sample_project), "--incremental"])
+        assert result.exit_code == 0
+
+        # Modify a file
+        auth_session = sample_project / "auth" / "session.py"
+        auth_session.write_text(auth_session.read_text() + "\ndef new_func(): pass\n")
+
+        # Incremental should pick up the change
+        result = runner.invoke(index, [str(sample_project), "--incremental"])
+        assert result.exit_code == 0
+        assert "1 files" in result.output
+
+    def test_incremental_handles_new_files(self, sample_project):
+        from click.testing import CliRunner
+        from codexlr8.cli import index
+
+        runner = CliRunner()
+        runner.invoke(index, [str(sample_project)])
+
+        # Add a new file
+        (sample_project / "new_module.py").write_text("def hello(): pass\n")
+
+        result = runner.invoke(index, [str(sample_project), "--incremental"])
+        assert result.exit_code == 0
+        assert "1 files" in result.output
+
+    def test_incremental_handles_deleted_files(self, sample_project):
+        from click.testing import CliRunner
+        from codexlr8.cli import index
+
+        runner = CliRunner()
+        runner.invoke(index, [str(sample_project)])
+
+        # Remove a file
+        (sample_project / "config.py").unlink()
+
+        result = runner.invoke(index, [str(sample_project), "--incremental"])
+        assert result.exit_code == 0
+        # One file deleted
+        assert "1 files" in result.output
+
     def test_status_after_index(self, sample_project):
         from click.testing import CliRunner
         from codexlr8.cli import index, status
