@@ -25,12 +25,13 @@ def scan(project_path: str, output: str | None):
         import json
         with open(output, "w") as f:
             json.dump(results, f, indent=2)
-        click.echo(f"Wrote symbol data for {len(results)} files to {output}")
+        click.echo(f"Wrote content data for {len(results)} files to {output}")
     else:
-        click.echo(f"Scanned {len(results)} files")
+        total_lines = sum(len(r.get("content", "").splitlines()) for r in results)
+        click.echo(f"Scanned {len(results)} files ({total_lines} lines total)")
         for entry in results[:10]:
-            symbols = ", ".join(s["name"] for s in entry.get("symbols", [])[:5])
-            click.echo(f"  {entry['path']}  [{len(entry['symbols'])} symbols: {symbols}]")
+            lines = len(entry["content"].splitlines())
+            click.echo(f"  {entry['path']}  ({lines} lines)")
         if len(results) > 10:
             click.echo(f"  ... and {len(results) - 10} more files")
 
@@ -60,8 +61,6 @@ def search(project_path: str, query: str, include_tests: bool, output_format: st
 
     for i, r in enumerate(results, 1):
         click.echo(f"{i}. {r['path']}:{r['line_start']}-{r['line_end']}  [score: {r['score']:.2f}]")
-        if r.get("symbol"):
-            click.echo(f"   symbol: {r['symbol']}")
         if r.get("summary"):
             click.echo(f"   meta:   {r['summary']}")
         if r.get("tags"):
@@ -105,5 +104,5 @@ def status(project_path: str):
     click.echo(f"Files indexed: {state['files_indexed']}")
     click.echo(f"Files with .meta.yaml: {state['files_with_meta']}")
     click.echo(f"Files without .meta.yaml: {state['files_without_meta']}")
-    click.echo(f"Total symbols: {state['total_symbols']}")
+    click.echo(f"Total lines indexed: {state['total_lines']}")
     click.echo(f"Index age: {state.get('index_age', 'N/A')}")

@@ -37,32 +37,24 @@ def write_meta(meta_path: str, data: dict) -> None:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
-def generate_auto_fields(filepath: str, symbols: list[dict], existing_meta: dict | None = None) -> dict:
-    """Generate auto-populated fields for a source file.
+def generate_meta_skeleton(existing_meta: dict | None = None) -> dict:
+    """Generate a fresh .meta.yaml skeleton, preserving curated fields.
 
-    Returns a dict with auto fields filled in, preserving any curated fields
-    from existing_meta.
+    Auto fields are empty — they can be populated by agents over time.
+    Curated fields (summary, tags, invariants, examples) are preserved
+    from existing_meta if provided.
     """
-    result: dict = {}
+    result: dict = {
+        "public_api": [],
+        "dependencies": [],
+        "used_by": [],
+        "last_modified": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
 
-    # Preserve curated fields if they exist
     if existing_meta:
         for key in ("summary", "tags", "invariants", "examples"):
             if key in existing_meta:
                 result[key] = existing_meta[key]
-
-    # Auto-generate public API
-    result["public_api"] = [
-        s["name"] for s in symbols
-        if s["kind"] in ("function", "async_function", "class")
-    ]
-
-    # Dependencies will be filled in by the indexer (needs cross-file analysis)
-    # Start with a placeholder that the indexer will update
-    result["dependencies"] = existing_meta.get("dependencies", []) if existing_meta else []
-    result["used_by"] = existing_meta.get("used_by", []) if existing_meta else []
-
-    result["last_modified"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return result
 
@@ -72,41 +64,47 @@ def generate_missing_sidecars(project_path: str) -> list[str]:
 
     Returns list of created meta file paths (relative to project root).
     """
-    symbols_data = scan_project(project_path)
+    files_data = scan_project(project_path)
     created = []
 
-    for entry in symbols_data:
+    for entry in files_data:
         filepath = os.path.join(project_path, entry["path"])
         meta_path = meta_path_for(filepath)
 
         if os.path.exists(meta_path):
             continue
 
-        meta_data = generate_auto_fields(filepath, entry["symbols"])
+        meta_data = generate_meta_skeleton()
         write_meta(meta_path, meta_data)
         created.append(entry["path"] + META_EXTENSION)
 
     return created
 
 
-def validate_meta(meta_path: str, symbols: list[dict]) -> list[str]:
-    """Validate a .meta.yaml against actual source symbols.
+def validate_meta(meta_path: str) -> list[str]:
+    """Validate a .meta.yaml file structure.
 
     Returns list of warning strings (empty if valid).
+    Checks: file exists, is valid YAML, required keys present.
     """
     warnings = []
-    meta = read_meta(meta_path)
-    if meta is None:
+
+    if not os.path.exists(meta_path):
         return ["No .meta.yaml found"]
 
-    public_api = set(meta.get("public_api", []))
-    actual_symbols = {
-        s["name"] for s in symbols
-        if s["kind"] in ("function", "async_function", "class")
-    }
+    try:
+        meta = read_meta(meta_path)
+    except Exception:
+        return [f"Failed to parse {meta_path}"]
 
-    missing = public_api - actual_symbols
-    if missing:
-        warnings.append(f"public_api lists symbols not found in source: {', '.join(sorted(missing))}")
+    if meta is None:
+        return ["Empty or invalid .meta.yaml"]
+
+    # Check auto fields exist
+    for key in ("public_api", "dependencies", "used_by"):
+        if key not in meta:
+            warnings.append(f"Missing required field: '{key}'")
+        elif not isinstance(meta[key], list):
+            warnings.append(f"Field '{key}' must be a list")
 
     return warnings

@@ -1,7 +1,5 @@
 """Tests for the .meta.yaml sidecar module."""
 
-import os
-
 import yaml
 
 from codexlr8.meta import (
@@ -9,10 +7,9 @@ from codexlr8.meta import (
     source_path_for,
     read_meta,
     write_meta,
-    generate_auto_fields,
+    generate_meta_skeleton,
     generate_missing_sidecars,
     validate_meta,
-    META_EXTENSION,
 )
 
 
@@ -66,49 +63,38 @@ class TestReadWrite:
         assert raw.index("public_api") < raw.index("summary") < raw.index("tags")
 
 
-class TestGenerateAutoFields:
-    def test_generates_from_symbols(self):
-        symbols = [
-            {"name": "login", "kind": "function"},
-            {"name": "logout", "kind": "function"},
-            {"name": "ShoppingCart", "kind": "class"},
-            {"name": "DEBUG", "kind": "variable"},
-        ]
-        result = generate_auto_fields("auth.py", symbols)
-        assert result["public_api"] == ["login", "logout", "ShoppingCart"]
-        assert "DEBUG" not in result["public_api"]  # variables excluded
+class TestGenerateMetaSkeleton:
+    def test_generates_fresh_skeleton(self):
+        result = generate_meta_skeleton()
+        assert result["public_api"] == []
+        assert result["dependencies"] == []
+        assert result["used_by"] == []
         assert "last_modified" in result
-        assert "dependencies" in result
-        assert "used_by" in result
 
     def test_preserves_curated_fields(self):
-        symbols = [{"name": "login", "kind": "function"}]
         existing = {
-            "public_api": ["login"],
             "summary": "Auth module",
             "tags": ["auth"],
             "invariants": ["db first"],
             "examples": "x = login()",
         }
-        result = generate_auto_fields("auth.py", symbols, existing_meta=existing)
+        result = generate_meta_skeleton(existing_meta=existing)
         assert result["summary"] == "Auth module"
         assert result["tags"] == ["auth"]
         assert result["invariants"] == ["db first"]
         assert result["examples"] == "x = login()"
-        assert result["public_api"] == ["login"]
 
     def test_overwrites_auto_fields(self):
-        symbols = [{"name": "login", "kind": "function"}]
         existing = {
             "public_api": ["old_func"],
             "dependencies": ["old_dep"],
             "used_by": ["old_user"],
         }
-        result = generate_auto_fields("auth.py", symbols, existing_meta=existing)
-        assert result["public_api"] == ["login"]  # overwritten
-        # dependencies/used_by preserved (they need cross-file analysis to fill)
-        assert result["dependencies"] == ["old_dep"]
-        assert result["used_by"] == ["old_user"]
+        result = generate_meta_skeleton(existing_meta=existing)
+        assert result["public_api"] == []  # reset to empty
+        assert result["dependencies"] == []
+        assert result["used_by"] == []
+        assert "last_modified" in result
 
 
 class TestGenerateMissingSidecars:
@@ -133,7 +119,7 @@ class TestGenerateMissingSidecars:
         (project / "main.py.meta.yaml").write_text("summary: already here\n")
 
         created = generate_missing_sidecars(str(project))
-        assert created == []  # none created, already exists
+        assert created == []
 
     def test_handles_empty_project(self, tmp_path):
         project = tmp_path / "empty"
@@ -149,42 +135,49 @@ class TestGenerateMissingSidecars:
         generate_missing_sidecars(str(project))
         meta = read_meta(str(project / "auth.py.meta.yaml"))
         assert meta is not None
-        assert "login" in meta["public_api"]
+        assert "public_api" in meta
         assert "last_modified" in meta
         assert "dependencies" in meta
 
 
 class TestValidateMeta:
     def test_valid_meta(self, tmp_path):
-        project = tmp_path / "proj"
-        project.mkdir()
-        (project / "auth.py").write_text("def login(): pass\n")
-        meta_path = str(project / "auth.py.meta.yaml")
-
-        meta = {
+        meta_path = str(tmp_path / "test.meta.yaml")
+        write_meta(meta_path, {
             "public_api": ["login"],
+            "dependencies": [],
+            "used_by": [],
             "summary": "Auth",
-        }
-        write_meta(meta_path, meta)
-        symbols = [{"name": "login", "kind": "function"}]
-        warnings = validate_meta(meta_path, symbols)
+        })
+        warnings = validate_meta(meta_path)
         assert warnings == []
 
-    def test_stale_public_api(self, tmp_path):
-        project = tmp_path / "proj"
-        project.mkdir()
-        (project / "auth.py").write_text("def new_login(): pass\n")
-        meta_path = str(project / "auth.py.meta.yaml")
+    def test_missing_file(self, tmp_path):
+        warnings = validate_meta(str(tmp_path / "nonexistent.meta.yaml"))
+        assert warnings == ["No .meta.yaml found"]
 
-        meta = {
-            "public_api": ["old_login", "deleted_func"],
-        }
-        write_meta(meta_path, meta)
-        symbols = [{"name": "new_login", "kind": "function"}]
-        warnings = validate_meta(meta_path, symbols)
-        assert len(warnings) == 1
-        assert "old_login" in warnings[0]
-        assert "deleted_func" in warnings[0]
+    def test_missing_required_fields(self, tmp_path):
+        meta_path = str(tmp_path / "test.meta.yaml")
+        write_meta(meta_path, {"summary": "just summary"})
+        warnings = validate_meta(meta_path)
+        assert any("public_api" in w for w in warnings)
+        assert any("dependencies" in w for w in warnings)
+
+    def test_wrong_field_type(self, tmp_path):
+        meta_path = str(tmp_path / "test.meta.yaml")
+        write_meta(meta_path, {
+            "public_api": "not_a_list",
+            "dependencies": [],
+            "used_by": [],
+        })
+        warnings = validate_meta(meta_path)
+        assert any("must be a list" in w for w in warnings)
+
+    def test_invalid_yaml(self, tmp_path):
+        meta_path = str(tmp_path / "bad.meta.yaml")
+        (tmp_path / "bad.meta.yaml").write_text(":: invalid yaml :::")
+        warnings = validate_meta(meta_path)
+        assert any("Failed to parse" in w for w in warnings)
 
 
 class TestCLIInit:
