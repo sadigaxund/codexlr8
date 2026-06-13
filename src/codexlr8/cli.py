@@ -146,3 +146,61 @@ def status(project_path: str):
     click.echo(f"Files without .meta.yaml: {state['files_without_meta']}")
     click.echo(f"Total lines indexed: {state['total_lines']}")
     click.echo(f"Index age: {state.get('index_age', 'N/A')}")
+
+
+@main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
+def setup(project_path: str):
+    """Interactively create a .codexlr8.yaml configuration file.
+
+    Walks through common settings and writes the config to the project root.
+    """
+    import os
+    import yaml
+
+    config_path = os.path.join(project_path, ".codexlr8.yaml")
+
+    if os.path.exists(config_path):
+        if not click.confirm(f"{config_path} already exists. Overwrite?"):
+            click.echo("Aborted.")
+            return
+
+    click.echo()
+    click.echo("CodeXLR8 Setup")
+    click.echo("==============")
+    click.echo()
+    click.echo("This will create a .codexlr8.yaml configuration file.")
+    click.echo("Press Enter to accept defaults, or type your own values.")
+    click.echo()
+
+    # Exclude directories
+    click.echo("--- Exclude Patterns ---")
+    click.echo("Glob patterns for files and directories to skip during indexing and search.")
+    click.echo()
+
+    defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*"]
+    default_str = ", ".join(defaults)
+
+    custom = click.prompt(
+        f"Exclude patterns (comma-separated)",
+        default=default_str,
+    ).strip()
+
+    if custom:
+        exclude = [p.strip() for p in custom.split(",") if p.strip()]
+    else:
+        exclude = defaults
+
+    config = {"exclude": exclude}
+
+    click.echo()
+    click.echo("Configuration:")
+    click.echo(yaml.dump(config, default_flow_style=False).strip())
+    click.echo()
+
+    if click.confirm("Write this to .codexlr8.yaml?"):
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+        click.echo(f"Wrote {config_path}")
+    else:
+        click.echo("Aborted.")

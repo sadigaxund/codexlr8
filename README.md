@@ -120,7 +120,52 @@ For programmatic use or agent integration:
 codexlr8 search . "login" --format json
 ```
 
+## Interactive Setup
+
+```bash
+codexlr8 setup
+```
+
+Walks you through creating a `.codexlr8.yaml` interactively — choose which directories to exclude.
+
+## Agent Integration (MCP)
+
+CodeXLR8 ships with an MCP server that gives LLM agents direct search access:
+
+### Server
+
+```bash
+codexlr8-mcp
+```
+
+Exposes two tools:
+
+| Tool | What it does |
+|---|---|
+| `codebase_search(query, path, limit?, exclude?)` | Search the codebase, return ranked results |
+| `codebase_index(path, incremental?, exclude?)` | Build or update the search index |
+
+### Client config
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "codexlr8": {
+      "command": "codexlr8-mcp"
+    }
+  }
+}
+```
+
+After configuring, agents in your session will have `codebase_search` and `codebase_index` available.
+
+### Agent skill
+
+See [skills/codexlr8-skill.md](skills/codexlr8-skill.md) for the agent instruction file. It teaches agents when to search, how to maintain `.meta.yaml` files, and how to keep the index healthy.
+
 ## Requirements
 
 - Python 3.10+
-- Zero external dependencies beyond stdlib (`sqlite3`, `yaml` from PyYAML, `click` for CLI)
+- Dependencies: `click`, `pyyaml`, `mcp`

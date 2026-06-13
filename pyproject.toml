@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
+    "mcp>=1.0",
 ]
 [project.optional-dependencies]
 dev = [
@@ -32,6 +33,7 @@ dev = [
 
 [project.scripts]
 codexlr8 = "codexlr8.cli:main"
+codexlr8-mcp = "codexlr8.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
