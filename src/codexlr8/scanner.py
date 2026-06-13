@@ -159,8 +159,8 @@ def _extract_regex(source: str) -> tuple[list[dict], str | None]:
         (r'^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)', "function"),
         (r'^\s*(?:export\s+)?class\s+(\w+)', "class"),
         (r'^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=', "variable"),
-        # Go: func Name(, type Name struct
-        (r'^\s*func\s+\(?\w*\s*\*?\w*\)?\s*(\w+)', "function"),
+        # Go: func Name(..., func (r *Receiver) Name(...
+        (r'^\s*func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)', "function"),
         (r'^\s*type\s+(\w+)\s+struct', "struct"),
         (r'^\s*type\s+(\w+)\s+interface', "interface"),
         # Rust: fn name(, struct Name, impl Name, pub fn name(
