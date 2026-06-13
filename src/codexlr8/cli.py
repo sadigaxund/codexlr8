@@ -2,9 +2,25 @@
 
 import click
 
+from .config import load_config
 from .scanner import scan_project
 from .meta import generate_missing_sidecars
 from .search import SearchEngine
+
+
+EXCLUDE_HELP = (
+    "Exclude files matching a glob pattern. Repeatable. "
+    "Defaults from .codexlr8.yaml if not specified. "
+    'Example: --exclude "tests/*" --exclude "migrations/*"'
+)
+
+
+def _parse_excludes(ctx: click.Context, param: click.Option, values: tuple[str, ...]) -> list[str]:
+    """Collect --exclude values from CLI and fall back to config defaults."""
+    if values:
+        return list(values)
+    config = load_config(ctx.params["project_path"])
+    return config.get("exclude", [])
 
 
 @click.group()
@@ -14,9 +30,9 @@ def main():
 
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False))
-@click.option("--output", "-o", default=None, help="Write symbol data to JSON file")
+@click.option("--output", "-o", default=None, help="Write scan data to JSON file")
 def scan(project_path: str, output: str | None):
-    """Scan a project and extract code symbols with docstrings.
+    """Scan a project and show file counts and line counts.
 
     PROJECT_PATH is the root directory of the codebase to scan.
     """
@@ -39,16 +55,25 @@ def scan(project_path: str, output: str | None):
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False))
 @click.argument("query")
-@click.option("--include-tests", is_flag=True, default=False, help="Do not penalize test files")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.option("--exclude", "-x", "exclude_patterns", multiple=True,
+              callback=_parse_excludes, help=EXCLUDE_HELP)
+@click.option("--format", "-f", "output_format",
+              type=click.Choice(["text", "json"]), default="text")
 @click.option("--limit", "-n", default=10, help="Maximum number of results")
-def search(project_path: str, query: str, include_tests: bool, output_format: str, limit: int):
-    """Search the codebase for symbols and metadata matching QUERY.
+def search(project_path: str, query: str, exclude_patterns: list[str],
+           output_format: str, limit: int):
+    """Search the codebase for code matching QUERY.
 
     PROJECT_PATH is the root directory of the codebase to search.
+
+    \b
+    Examples:
+      codexlr8 search . "login auth"
+      codexlr8 search . "login auth" --exclude "tests/*"
+      codexlr8 search . "login auth" -x "tests/*" -x "vendor/*"
     """
     engine = SearchEngine(project_path)
-    results = engine.search(query, include_tests=include_tests, limit=limit)
+    results = engine.search(query, limit=limit, exclude=exclude_patterns)
 
     if output_format == "json":
         import json
@@ -60,13 +85,14 @@ def search(project_path: str, query: str, include_tests: bool, output_format: st
         return
 
     for i, r in enumerate(results, 1):
-        click.echo(f"{i}. {r['path']}:{r['line_start']}-{r['line_end']}  [score: {r['score']:.2f}]")
+        click.echo(f"{i}. {r['path']}:{r['line_start']}-{r['line_end']}  "
+                   f"[score: {r['score']:.2f}]")
         if r.get("summary"):
             click.echo(f"   meta:   {r['summary']}")
         if r.get("tags"):
             click.echo(f"   tags:   {', '.join(r['tags'])}")
         if r.get("preview"):
-            click.echo(f"   preview: |")
+            click.echo("   preview: |")
             for line in r["preview"].strip().splitlines()[:6]:
                 click.echo(f"     {line}")
         click.echo()
@@ -76,10 +102,19 @@ def search(project_path: str, query: str, include_tests: bool, output_format: st
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False))
 @click.option("--incremental", "-i", is_flag=True, default=False,
               help="Only re-index files that have changed since last build")
-def index(project_path: str, incremental: bool):
-    """Build the full search index for a project."""
+@click.option("--exclude", "-x", "exclude_patterns", multiple=True,
+              callback=_parse_excludes, help=EXCLUDE_HELP)
+def index(project_path: str, incremental: bool, exclude_patterns: list[str]):
+    """Build the full search index for a project.
+
+    \b
+    Examples:
+      codexlr8 index .
+      codexlr8 index . --incremental
+      codexlr8 index . --exclude "tests/*" --exclude "vendor/*"
+    """
     engine = SearchEngine(project_path)
-    count = engine.build_index(incremental=incremental)
+    count = engine.build_index(incremental=incremental, exclude=exclude_patterns)
     if incremental:
         click.echo(f"Incrementally updated {count} files.")
     else:

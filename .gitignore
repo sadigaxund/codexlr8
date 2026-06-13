@@ -226,4 +226,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 .dist-info/
+demo/
 

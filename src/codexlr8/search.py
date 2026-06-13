@@ -2,28 +2,17 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import sqlite3
 from datetime import datetime, timezone
 
+from .config import load_config
 from .meta import META_EXTENSION, read_meta
 from .scanner import scan_project
 
 INDEX_DB_NAME = ".codexlr8_index.db"
-
-
-def _is_test_file(path: str) -> bool:
-    for pattern in [
-        r"(^|[/\\])tests?([/\\]|$)",
-        r"(^|[/\\])spec([/\\]|$)",
-        r"(^|[/\\])__tests__([/\\]|$)",
-    ]:
-        if re.search(pattern, path):
-            return True
-    basename = os.path.basename(path)
-    name, _ = os.path.splitext(basename)
-    return name.startswith("test_") or name.endswith("_test")
 
 
 def _is_init_file(path: str) -> bool:
@@ -36,12 +25,30 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text.lower())
 
 
+def _matches_exclude(path: str, excludes: list[str]) -> bool:
+    """Check if a file path matches any exclude pattern."""
+    basename = os.path.basename(path)
+    for pattern in excludes:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if fnmatch.fnmatch(basename, pattern):
+            return True
+    return False
+
+
 class SearchEngine:
     """SQLite FTS5-backed search engine for a codebase."""
 
     def __init__(self, project_path: str):
         self.project_path = os.path.abspath(project_path)
         self.db_path = os.path.join(self.project_path, INDEX_DB_NAME)
+        self._config = None
+
+    @property
+    def config(self) -> dict:
+        if self._config is None:
+            self._config = load_config(self.project_path)
+        return self._config
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -50,27 +57,30 @@ class SearchEngine:
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
-    def build_index(self, incremental: bool = False) -> int:
+    def build_index(self, incremental: bool = False,
+                    exclude: list[str] | None = None) -> int:
         """Build the full search index.
 
-        If incremental=True, only re-index files that have changed
-        since the last index build. New files are added, deleted files
-        are removed.
+        If incremental=True, only re-index changed/new/removed files.
+        If exclude is given, use those patterns; otherwise use config defaults.
 
-        Returns number of files indexed (added/updated in incremental mode).
+        Returns number of files indexed/mutated.
         """
-        files_data = scan_project(self.project_path)
+        if exclude is None:
+            exclude = self.config.get("exclude", [])
+
+        files_data = [
+            f for f in scan_project(self.project_path)
+            if not _matches_exclude(f["path"], exclude)
+        ]
+
         conn = self._get_connection()
 
         if not incremental:
             conn.execute("DROP TABLE IF EXISTS files")
             conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS files USING fts5(
-                    path,
-                    summary,
-                    tags,
-                    public_api,
-                    content,
+                    path, summary, tags, public_api, content,
                     tokenize='porter unicode61'
                 )
             """)
@@ -80,14 +90,12 @@ class SearchEngine:
                     path TEXT PRIMARY KEY,
                     content_size INTEGER,
                     has_meta BOOLEAN,
-                    is_test BOOLEAN,
                     is_init BOOLEAN,
                     file_mtime REAL,
                     index_built_at TEXT
                 )
             """)
 
-        # Ensure tables exist (incremental mode may use existing tables)
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS files USING fts5(
                 path, summary, tags, public_api, content,
@@ -99,7 +107,6 @@ class SearchEngine:
                 path TEXT PRIMARY KEY,
                 content_size INTEGER,
                 has_meta BOOLEAN,
-                is_test BOOLEAN,
                 is_init BOOLEAN,
                 file_mtime REAL,
                 index_built_at TEXT
@@ -120,7 +127,6 @@ class SearchEngine:
     def _full_rebuild(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> int:
         conn.execute("DELETE FROM files")
         conn.execute("DELETE FROM file_meta")
-
         count = 0
         for entry in files_data:
             self._index_file(conn, entry, now)
@@ -128,7 +134,6 @@ class SearchEngine:
         return count
 
     def _incremental_update(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> int:
-        # Get current file paths and their mtimes
         current_files: dict[str, float] = {}
         file_data_map: dict[str, dict] = {}
         for entry in files_data:
@@ -137,20 +142,17 @@ class SearchEngine:
             current_files[entry["path"]] = mtime
             file_data_map[entry["path"]] = entry
 
-        # Get indexed file paths
         indexed = conn.execute("SELECT path, file_mtime FROM file_meta").fetchall()
         indexed_map = {row["path"]: row["file_mtime"] for row in indexed}
 
         count = 0
 
-        # Remove deleted files
         removed = set(indexed_map) - set(current_files)
         for path in removed:
             conn.execute("DELETE FROM files WHERE path = ?", (path,))
             conn.execute("DELETE FROM file_meta WHERE path = ?", (path,))
-            count += 1  # count removals as "changes"
+            count += 1
 
-        # Add new files or update changed files
         for path, mtime in current_files.items():
             if path not in indexed_map or mtime > indexed_map[path]:
                 self._index_file(conn, file_data_map[path], now, replace=True)
@@ -161,7 +163,6 @@ class SearchEngine:
     def _index_file(self, conn: sqlite3.Connection, entry: dict, now: str, replace: bool = False):
         path = entry["path"]
         content = entry.get("content", "")
-
         abspath = os.path.join(self.project_path, path)
         meta = read_meta(abspath + META_EXTENSION) or {}
         mtime = os.path.getmtime(abspath)
@@ -185,13 +186,21 @@ class SearchEngine:
 
         conn.execute(
             "INSERT OR REPLACE INTO file_meta "
-            "(path, content_size, has_meta, is_test, is_init, file_mtime, index_built_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (path, line_count, bool(meta), _is_test_file(path), _is_init_file(path),
-             mtime, now),
+            "(path, content_size, has_meta, is_init, file_mtime, index_built_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (path, line_count, bool(meta), _is_init_file(path), mtime, now),
         )
 
-    def search(self, query: str, include_tests: bool = False, limit: int = 10) -> list[dict]:
+    def search(self, query: str, limit: int = 10,
+               exclude: list[str] | None = None) -> list[dict]:
+        """Search the codebase and return ranked results.
+
+        Args:
+            query: Natural language search query.
+            limit: Maximum number of results.
+            exclude: Exclude patterns (overrides config defaults).
+                     Files matching any pattern are excluded from results.
+        """
         if not os.path.exists(self.db_path):
             return []
 
@@ -199,13 +208,16 @@ class SearchEngine:
         if not tokens:
             return []
 
+        if exclude is None:
+            exclude = self.config.get("exclude", [])
+
         conn = self._get_connection()
 
         fts_query = " OR ".join(tokens)
 
         cursor = conn.execute(
             "SELECT f.path, f.summary, f.tags, f.public_api, "
-            "       m.is_test, m.is_init, rank "
+            "       m.is_init, rank "
             "FROM files f "
             "JOIN file_meta m ON f.path = m.path "
             "WHERE files MATCH ? "
@@ -216,9 +228,9 @@ class SearchEngine:
 
         results = []
         for row in cursor:
+            if _matches_exclude(row["path"], exclude):
+                continue
             score = self._compute_score(tokens, dict(row))
-            if not include_tests:
-                score *= 0.5 if row["is_test"] else 1.0
             if row["is_init"]:
                 score *= 0.6
             results.append({
@@ -250,7 +262,6 @@ class SearchEngine:
 
     def _compute_score(self, tokens: list[str], row: dict) -> float:
         score = 0.0
-
         public_api = (row.get("public_api") or "").lower()
         summary = (row.get("summary") or "").lower()
         tags = (row.get("tags") or "").lower()
