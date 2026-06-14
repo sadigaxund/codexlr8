@@ -268,6 +268,76 @@ def eval_cmd(project_path: str, queries: str, limit: int):
 
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
+@click.option("--model", "-m", default="all-MiniLM-L6-v2",
+              help="Embedding model to fine-tune")
+@click.option("--epochs", "-e", default=3,
+              help="Training epochs (default: 3)")
+@click.option("--incremental", "-i", is_flag=True, default=False,
+              help="Fine-tune only on changed files")
+def train(project_path: str, model: str, epochs: int, incremental: bool):
+    """Fine-tune an embedding model on this codebase for better search accuracy.
+
+    Uses TSDAE (denoising auto-encoder) to adapt a pretrained model to
+    your codebase's vocabulary. The fine-tuned model is saved to
+    .codexlr8_model/ and referenced in .codexlr8.yaml.
+
+    Requirements: pip install codexlr8[embeddings]
+    """
+    try:
+        from .train import train_model
+    except ImportError as e:
+        raise click.ClickException(
+            "Training requires 'pip install codexlr8[embeddings]'"
+        ) from e
+
+    click.echo()
+    click.secho("  Training embedding model on this codebase...", fg="cyan", bold=True)
+    click.echo(f"  Model:  {model}")
+    click.echo(f"  Epochs: {epochs}")
+    click.echo()
+
+    try:
+        result = train_model(project_path, model_name=model,
+                             epochs=epochs, incremental=incremental)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    dur = result["duration_sec"]
+    dur_str = f"{dur}s" if dur < 60 else f"{dur // 60}m{dur % 60}s"
+
+    click.echo()
+    click.secho(f"  Trained on {result['num_examples']} files in {dur_str}", fg="green")
+    click.secho(f"  Model saved to {result['model_path']}", fg="green")
+    click.secho(f"  Embeddings enabled in .codexlr8.yaml", fg="green")
+    click.echo()
+    click.secho("  Run 'codexlr8 eval .' to measure improvement.", dim=True)
+
+
+@main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
+def recommend_model_cmd(project_path: str):
+    """Suggest the best embedding model for this codebase size."""
+    try:
+        from .train import recommend_model
+    except ImportError as e:
+        raise click.ClickException(
+            "Requires 'pip install codexlr8[embeddings]'"
+        ) from e
+
+    rec = recommend_model(project_path)
+
+    click.echo()
+    click.secho(f"  Codebase: {rec['num_files']} files, ~{rec['est_tokens']:,} tokens", fg="cyan")
+    click.echo()
+    click.secho(f"  Recommended: {rec['model']} ({rec['param_count']})", fg="green", bold=True)
+    click.echo(f"  Est. training time: {rec['est_training_time']}")
+    click.echo(f"  Expected quality gain: {rec.get('quality_gain', '+5-12% MRR')}")
+    click.echo()
+    click.secho("  Run 'codexlr8 train .' to start training.", dim=True)
+
+
+@main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
 def setup(project_path: str):
     """Interactively create a .codexlr8.yaml configuration file.
 
