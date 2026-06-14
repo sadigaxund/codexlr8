@@ -18,7 +18,7 @@ codebase_search(query="stripe charge customer refund")
 codebase_search(query="shopping cart checkout payment")
 ```
 
-Describe what you're looking for in natural language. The engine uses AND semantics — more terms increase precision, not noise. No need to limit to a specific number of words.
+Describe what you're looking for in natural language. The engine uses OR semantics with a scoring layer — more terms increase precision through token-coverage ranking, not a hard AND requirement. No need to limit to a specific number of words.
 
 ## Interpreting results
 

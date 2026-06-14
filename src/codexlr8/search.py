@@ -216,11 +216,14 @@ class SearchEngine:
                scope: str | None = None) -> list[dict]:
         """Search the codebase and return ranked results.
 
-        Uses AND semantics: all query tokens must match (like Google).
-        Falls back to OR if AND returns nothing, with a post-filter
-        requiring at least 50% of query tokens to match the document.
+        Uses OR semantics: any token can match. The custom scoring layer
+        (path weighting, metadata boosts, match ratio) naturally surfaces
+        files that match more tokens. A post-filter requires >=50% of query
+        tokens to match for multi-token queries.
 
-        scope: optional path prefix to restrict search to (e.g. "src/", "lib/mpl_toolkits/")
+        This replaces the previous AND-then-OR fallback, which caused precise
+        multi-token queries to return zero results (AND too strict) or too
+        many flatly-scored results (OR fallback with no differentiation).
         """
         if not os.path.exists(self.db_path):
             return []
@@ -238,13 +241,15 @@ class SearchEngine:
         scope_clause = ""
         scope_params: list[str] = []
         if scope:
-            # Normalize: strip trailing slashes, ensure single wildcard
             scope_norm = scope.rstrip("/")
             scope_clause = "AND f.path LIKE ?"
             scope_params = [scope_norm + "/%"]
 
-        # Stage 1: try AND (best precision)
-        and_query = " AND ".join(tokens)
+        # Always use OR semantics. Multi-token matches naturally rank higher
+        # via _compute_score (match_ratio scales with token coverage).
+        or_query = " OR ".join(tokens)
+        # Fetch more than needed — scoring will filter to top limit
+        fetch_limit = max(limit * 20, 200)
         cursor = conn.execute(
             "SELECT f.path, f.summary, f.tags, f.public_api, f.content, "
             "       m.is_init, rank "
@@ -254,28 +259,12 @@ class SearchEngine:
             + scope_clause + " "
             "ORDER BY rank "
             "LIMIT ?",
-            [and_query] + scope_params + [limit * 5],
+            [or_query] + scope_params + [fetch_limit],
         )
         rows = cursor.fetchall()
 
-        # Stage 2: fall back to OR if AND found nothing
-        if not rows and len(tokens) > 1:
-            or_query = " OR ".join(tokens)
-            cursor = conn.execute(
-                "SELECT f.path, f.summary, f.tags, f.public_api, f.content, "
-                "       m.is_init, rank "
-                "FROM files f "
-                "JOIN file_meta m ON f.path = m.path "
-                "WHERE files MATCH ? "
-                + scope_clause + " "
-                "ORDER BY rank "
-                "LIMIT ?",
-                [or_query] + scope_params + [limit * 10],
-            )
-            rows = cursor.fetchall()
-
-        # Stage 3: post-filter by token coverage
-        min_ratio = 0.5 if len(tokens) >= 4 else 0.0
+        # Post-filter: for multi-token queries, require >=50% token match
+        min_ratio = 0.5 if len(tokens) >= 2 else 0.0
         results = []
         for row in rows:
             if _matches_exclude(row["path"], exclude):

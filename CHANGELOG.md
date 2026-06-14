@@ -5,7 +5,7 @@
 Initial release. A purpose-built codebase search engine for LLM coding agents.
 
 ### Features
-- Full-text codebase search with SQLite FTS5 and AND semantics
+- Full-text codebase search with SQLite FTS5 and OR semantics with token-coverage scoring
 - `.meta.yaml` sidecar files for curated metadata (summary, tags, public_api)
 - CLI: `scan`, `init`, `index`, `search`, `status`, `setup`
 - MCP server for agent integration (`codebase_search`, `codebase_index`)
