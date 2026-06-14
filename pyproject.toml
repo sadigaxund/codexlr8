@@ -9,7 +9,7 @@ description = "A codebase search engine for LLM coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
-authors = [{name = "CodeXLR8"}]
+authors = [{name = "Sadig Akhund", email = "sadigaxund@gmail.com"}]
 keywords = ["code-search", "llm", "agent", "navigation", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/anomalyco/codexlr8"
-Repository = "https://github.com/anomalyco/codexlr8"
-Issues = "https://github.com/anomalyco/codexlr8/issues"
+Homepage = "https://github.com/sadigaxund/codexlr8"
+Repository = "https://github.com/sadigaxund/codexlr8"
+Issues = "https://github.com/sadigaxund/codexlr8/issues"
 
 [project.optional-dependencies]
 dev = [

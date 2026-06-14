@@ -229,3 +229,4 @@ __pycache__/
 dist/
 build/
 demo/
+to_delete/

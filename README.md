@@ -88,23 +88,30 @@ A file without a `.meta.yaml` still gets indexed (Layer 1 only). Adding `summary
 Optional `.codexlr8.yaml` at the project root:
 
 ```yaml
-exclude:
+root: "."
+include: []                     # scope: only scan these directories
+exclude:                        # filter: skip these
   - tests/*
   - test/*
   - spec/*
   - __tests__/*
   - test_*
   - *_test.*
-  - vendor/*
-  - migrations/*
+extensions:                     # file types to index
+  - .py
+  - .js
+  - .ts
+  - .go
+ignore_dirs:                    # skip directories entirely
+  - .git
+  - __pycache__
+  - node_modules
+  - .venv
+  - dist
+  - build
 ```
 
-Defaults are sensible for most projects. Override to match your project's conventions. You can also pass `--exclude` on the command line:
-
-```bash
-codexlr8 search . "auth" --exclude "tests/*" --exclude "vendor/*"
-codexlr8 index . --exclude "tests/*"
-```
+All fields have defaults. Run `codexlr8 setup` to create one interactively.
 
 CLI `--exclude` overrides the config file for that command.
 
@@ -170,6 +177,38 @@ After configuring, agents in your session will have `codebase_search` and `codeb
 ### Agent skill
 
 See [skills/codexlr8-skill.md](skills/codexlr8-skill.md) for the agent instruction file. It teaches agents when to search, how to maintain `.meta.yaml` files, and how to keep the index healthy.
+
+### Install into Claude Code
+
+1. Install the package:
+   ```bash
+   pip install codexlr8
+   ```
+
+2. Add the skill to your Claude Code skills directory:
+   ```bash
+   mkdir -p ~/.claude/skills/codexlr8
+   cp skills/codexlr8-skill.md ~/.claude/skills/codexlr8/SKILL.md
+   ```
+
+3. Add the MCP server to your Claude Code config (`~/.claude/claude.json` or `.claude/settings.json`):
+   ```json
+   {
+     "mcpServers": {
+       "codexlr8": {
+         "command": "codexlr8-mcp"
+       }
+     }
+   }
+   ```
+
+4. In your project, bootstrap metadata and build the index:
+   ```bash
+   codexlr8 init .
+   codexlr8 index .
+   ```
+
+After this, Claude Code will have `codebase_search` and `codebase_index` tools available in every session. The skill instructs the agent to use them automatically.
 
 ## Requirements
 
