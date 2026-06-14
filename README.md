@@ -35,11 +35,28 @@ CodeXLR8 indexes your codebase into an SQLite FTS5 database alongside optional `
 
 | Layer | Source | Boost |
 |---|---|---|
-| 1 | Raw file content (function names, variables, comments, docstrings) | FTS5 BM25 base |
-| 2 | `.meta.yaml` `summary` + `tags` | 0.6× – 0.8× |
+| 1 | Raw file content | 0.3× per token |
+| 2a | File path (filename, directory) | 0.5× – 0.8× |
+| 2b | `.meta.yaml` `summary` + `tags` | 0.6× – 0.8× |
 | 3 | `.meta.yaml` `public_api` | 1.0× (strongest) |
 
-Search uses AND semantics (like Google): all query tokens must match. If no results, falls back to OR with a ≥50% token threshold.
+Search uses OR semantics with token-coverage scoring: more matching tokens = higher score. A ≥50% post-filter eliminates single-token noise for multi-word queries. Path weighting (Layer 2a) provides differentiation even without metadata — a file whose name IS the query token ranks above one that merely mentions it.
+
+### Scoped search and clustering
+
+```bash
+# Narrow to a specific directory (like grep -rn "pattern" dir/)
+codexlr8 search . "get_visible" --scope lib/mpl_toolkits/
+
+# Cluster results by directory to see where matches concentrate
+codexlr8 search . "get_visible" --grouped
+# 12 results in 3 directories (8 files) across project:
+#   lib/mpl_toolkits/mplot3d/  (5 files)
+#     ─ axes3d.py:388  [score: 0.90]
+#     ...
+
+# Combine both — group, then scope to drill down
+```
 
 ## .meta.yaml Sidecars
 
