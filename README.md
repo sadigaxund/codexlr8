@@ -16,7 +16,13 @@ LLM agents waste tokens with `ls`, `grep`, and speculative file reads when navig
 ## Install
 
 ```bash
-pip install -e .
+pip install codexlr8
+```
+
+Or from source:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ## Quick Start

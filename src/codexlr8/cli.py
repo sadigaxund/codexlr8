@@ -155,82 +155,77 @@ def status(project_path: str):
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
 def setup(project_path: str):
-    """Interactively create a .codexlr8.yaml configuration file.
-
-    Walks through common settings and writes the config to the project root.
-    """
+    """Interactively create a .codexlr8.yaml configuration file."""
     import os
     import yaml
 
     config_path = os.path.join(project_path, ".codexlr8.yaml")
 
+    click.echo()
+    click.secho("  ╔══════════════════════════════════════════╗", fg="cyan")
+    click.secho("  ║       CodeXLR8  —  Project Setup         ║", fg="cyan", bold=True)
+    click.secho("  ╚══════════════════════════════════════════╝", fg="cyan")
+    click.echo()
+
     if os.path.exists(config_path):
-        if not click.confirm(f"{config_path} already exists. Overwrite?"):
-            click.echo("Aborted.")
+        if not click.confirm(
+            click.style("  .codexlr8.yaml already exists. Overwrite?", fg="yellow")
+        ):
+            click.secho("  Aborted.", fg="red")
             return
 
-    click.echo()
-    click.echo("CodeXLR8 Setup")
-    click.echo("==============")
-    click.echo()
-    click.echo("This will create a .codexlr8.yaml configuration file.")
-    click.echo("Press Enter to accept defaults, or type your own values.")
+    click.secho("  Press Enter to accept defaults, or type your own values.", dim=True)
     click.echo()
 
     # Root
-    click.echo("--- Project Root ---")
-    click.echo("The directory to scan from. Default is the current directory.")
-    root = click.prompt("Project root", default=".").strip() or "."
+    click.secho("  ▸ Project Root", fg="green", bold=True)
+    click.echo("    The directory to scan from (relative to this location).")
+    root = click.prompt(
+        click.style("    Root", fg="bright_white"), default="."
+    ).strip() or "."
     click.echo()
 
-    # Include patterns
-    click.echo("--- Include Patterns ---")
-    click.echo("Glob patterns for files to INCLUDE in the search scope.")
-    click.echo("Leave empty to scan everything (recommended for most projects).")
-    click.echo("Example: src/*, docs/*  (only scan src/ and docs/ directories)")
+    # Include
+    click.secho("  ▸ Include Patterns", fg="green", bold=True)
+    click.echo("    Only scan files matching these globs. Leave empty to scan everything.")
     custom_include = click.prompt(
-        "Include patterns (comma-separated)",
-        default="",
+        click.style("    Include", fg="bright_white"), default=""
     ).strip()
     include = [p.strip() for p in custom_include.split(",") if p.strip()]
     click.echo()
 
-    # Exclude patterns
-    click.echo("--- Exclude Patterns ---")
-    click.echo("Glob patterns for files to EXCLUDE from indexing and search.")
-    click.echo()
+    # Exclude
+    click.secho("  ▸ Exclude Patterns", fg="green", bold=True)
+    click.echo("    Skip files matching these globs during indexing and search.")
     defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*"]
-    default_str = ", ".join(defaults)
     custom_exclude = click.prompt(
-        "Exclude patterns (comma-separated)",
-        default=default_str,
+        click.style("    Exclude", fg="bright_white"),
+        default=", ".join(defaults),
     ).strip()
     exclude = [p.strip() for p in custom_exclude.split(",") if p.strip()] if custom_exclude else defaults
-
-    # File extensions
     click.echo()
-    click.echo("--- File Extensions ---")
-    click.echo("Which file extensions to scan for code. Defaults cover most languages.")
+
+    # Extensions
+    click.secho("  ▸ File Extensions", fg="green", bold=True)
+    click.echo("    Which file types to index. Defaults cover most programming languages.")
     ext_defaults = [".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".rb",
                     ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".swift",
                     ".kt", ".sql", ".sh", ".lua"]
-    ext_str = ", ".join(ext_defaults)
     custom_ext = click.prompt(
-        "File extensions (comma-separated)",
-        default=ext_str,
+        click.style("    Extensions", fg="bright_white"),
+        default=", ".join(ext_defaults),
     ).strip()
     extensions = [p.strip() for p in custom_ext.split(",") if p.strip()] if custom_ext else ext_defaults
-
-    # Ignore directories
     click.echo()
-    click.echo("--- Ignored Directories ---")
-    click.echo("Directories to skip entirely (build artifacts, caches, dependencies).")
+
+    # Ignore dirs
+    click.secho("  ▸ Ignored Directories", fg="green", bold=True)
+    click.echo("    Directories to skip entirely (build artifacts, caches, dependencies).")
     ig_defaults = [".git", "__pycache__", "node_modules", ".venv", "venv",
                    ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"]
-    ig_str = ", ".join(ig_defaults)
     custom_ig = click.prompt(
-        "Ignored directories (comma-separated)",
-        default=ig_str,
+        click.style("    Ignore", fg="bright_white"),
+        default=", ".join(ig_defaults),
     ).strip()
     ignore_dirs = [p.strip() for p in custom_ig.split(",") if p.strip()] if custom_ig else ig_defaults
 
@@ -243,13 +238,14 @@ def setup(project_path: str):
     }
 
     click.echo()
-    click.echo("Configuration:")
-    click.echo(yaml.dump(config, default_flow_style=False).strip())
+    click.secho("  ── Preview ──", fg="cyan")
+    for line in yaml.dump(config, default_flow_style=False).strip().splitlines():
+        click.echo(f"  {click.style(line, fg='bright_white')}")
     click.echo()
 
-    if click.confirm("Write this to .codexlr8.yaml?"):
+    if click.confirm(click.style("  Write this to .codexlr8.yaml?", fg="yellow")):
         with open(config_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
-        click.echo(f"Wrote {config_path}")
+        click.secho(f"  ✓  Wrote {config_path}", fg="green")
     else:
-        click.echo("Aborted.")
+        click.secho("  Aborted.", fg="red")
