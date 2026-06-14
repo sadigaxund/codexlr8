@@ -1,346 +1,211 @@
-# CodeXLR8 — A Codebase Search Engine for LLM Agents
+# CodeXLR8 — Architecture & Design Specification
 
----
+## Problem Statement
 
-## The Problem
+LLM coding agents burn tokens on navigation. Given a task like "fix the login bug," an agent with no prior knowledge of the codebase resorts to `ls`, broad `grep`, and speculative file reads. This is noisy (grep matches comments, tests, vendored code), expensive (reading irrelevant files burns API tokens), and error-prone (hidden dependencies and invariants go undiscovered).
 
-When an LLM-based coding agent gets a task like "fix a bug in auth," it has no map of the project. It falls back to:
+Existing tools (Sourcegraph, Zoekt, ctags, Livegrep, GitHub Code Search) are designed for **human browsing** — web UIs, regex-based queries, no ranking tuned for agent needs, no metadata enrichment.
 
-- Listing directory trees
-- Running broad `grep` searches
-- Speculatively reading entire files
+## Design Goals
 
-This **burns tokens** (reading irrelevant code), **introduces noise** (grep matches in comments, tests, vendored libs), and **misses context** (hidden dependencies, design invariants). The cost and error rate climb sharply with codebase size.
+1. **Agent-first**: The primary consumer is an LLM agent, not a human browsing a web UI.
+2. **Zero setup works**: The engine produces useful results on any codebase without metadata.
+3. **Incrementally adoptable**: Optional `.meta.yaml` sidecars add precision over time.
+4. **Language agnostic**: No AST parsing. Pure tokenization of file content.
+5. **No external dependencies**: SQLite FTS5 + PyYAML + Click. No servers, no API keys, no Docker.
+6. **Fast**: <100ms results for codebases up to 10,000 files.
 
-Existing tools (Sourcegraph, Zoekt, GitHub Code Search, ctags, Livegrep) are designed for **human** browsing — not for an LLM agent that needs precise, ranked, minimal results in a single tool call.
+## Architecture
 
----
+```
+                    ┌──────────────────────┐
+                    │   Agent (MCP Client)  │
+                    │  codebase_search()    │
+                    └──────────┬───────────┘
+                               │ stdio / HTTP
+                    ┌──────────▼───────────┐
+                    │     MCP Server        │
+                    │  codebase_search      │
+                    │  codebase_index       │
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────▼───────────┐
+                    │  SearchEngine (core)  │
+                    │  build_index()        │
+                    │  search()             │
+                    └──────┬───────┬───────┘
+                           │       │
+              ┌────────────▼─┐  ┌──▼────────────┐
+              │   Scanner     │  │  Config        │
+              │  walk + read  │  │  .codexlr8.yaml│
+              │  (no parsing) │  │  defaults      │
+              └───────┬───────┘  └────────────────┘
+                      │
+              ┌───────▼────────┐
+              │  .meta.yaml     │  ← optional curated layer
+              │  summary, tags, │
+              │  public_api     │
+              └────────────────┘
+```
 
-## The Solution
+### Module Map
 
-CodeXLR8 is a **purpose-built search engine** for LLM coding agents. It indexes code symbols, docstrings, and optional structured metadata sidecar files into an inverted index with ranking tuned for agent code navigation. The agent calls it like a search engine — natural language in, ranked file locations out.
+```
+src/codexlr8/
+  scanner.py     — Walk project, read raw file content
+  search.py      — SQLite FTS5 index, AND-semantics query, ranking
+  meta.py        — .meta.yaml read/write/generate/validate
+  config.py      — .codexlr8.yaml loading with defaults
+  cli.py         — Click CLI (scan, init, index, search, status, setup)
+  mcp_server.py  — MCP stdio server wrapping SearchEngine
+```
 
-### The Three-Layer Value Stack
+## The Three-Layer Value Stack
 
-| Layer | What it indexes | Value |
-|---|---|---|
-| **Layer 1** | Code symbols (function/class/variable names) | Already beats raw grep. No setup needed. |
-| **Layer 2** | Docstrings and comments | Adds human-meaningful text. Free if the codebase is documented. |
-| **Layer 3** | `.meta.yaml` sidecar files | Curated descriptions, tags, dependencies, invariants. Maximum signal. |
+| Layer | Source | What | Weight |
+|---|---|---|---|
+| 1 | File content | Function names, variable names, comments, docstrings | BM25 base |
+| 2 | `.meta.yaml` curated fields | summary + tags | 0.6–0.8× boost |
+| 3 | `.meta.yaml` public_api | Explicit symbol list | 1.0× boost |
 
-Layer 1 works immediately on any codebase — zero setup. Layers 2–3 are additive boosts. Each layer increases ranking precision.
+**Layer 1** works immediately, zero setup, on any codebase. **Layers 2–3** add precision through optional human/agent curation.
 
----
+## Search Engine Design
 
-## Metadata Sidecar Files (`.meta.yaml`)
+### Index
 
-Each source file can optionally be accompanied by a `.meta.yaml` sidecar. Sidecars are chosen over inline headers because:
+SQLite FTS5 with `porter unicode61` tokenizer. Virtual table columns:
 
-- The search engine indexes YAML directly — no source parsing needed.
-- Auto-generated fields can be regenerated without touching source code.
-- Works for any file type (code, SQL, Markdown, configs).
-- Reading a 15-line `.meta.yaml` costs ~50 tokens vs opening the actual file.
+| Column | Content |
+|---|---|
+| `path` | Relative file path |
+| `summary` | From `.meta.yaml` |
+| `tags` | Space-joined from `.meta.yaml` |
+| `public_api` | Space-joined from `.meta.yaml` |
+| `content` | Raw file content |
 
-### Format
+A companion `file_meta` table stores `content_size`, `has_meta`, `is_init`, `file_mtime`, and `index_built_at` for incremental updates and status reporting.
+
+### Query Semantics
+
+**AND by default — like Google.** All query tokens must appear in the indexed document. This eliminates the noise of OR semantics where a 10-word query matches every file containing "the" or "is".
+
+Fallback: if AND returns nothing (rare for multi-token queries), the engine retries with OR and applies a post-filter requiring ≥50% of query tokens to match the document.
+
+### Tokenization
+
+Matches identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`) and standalone numbers (`\d+`). Single-letter tokens are discarded. `"Phase 28"` → `["phase", "28"]`. Number support was added in v0.1 after discovering that OR semantics + no-number matching made queries like "Phase 28" only match on "phase".
+
+### Scoring
+
+```
+score = (∑ token_boost) × match_ratio
+
+token_boost:
+  token ∈ public_api     → 1.0
+  token ∈ tags           → 0.8
+  token ∈ summary        → 0.6
+  token ∈ content (BM25) → 0.3
+
+match_ratio: matched_tokens / total_query_tokens
+
+Penalties:
+  __init__.py            → score × 0.6
+```
+
+### Incremental Indexing
+
+Tracks `file_mtime` per indexed file. `--incremental` mode compares timestamps and only re-indexes changed, new, or deleted files. Removed files are dropped from the index.
+
+### Exclusion
+
+Files are excluded at **index time** (never enter the index) and **query time** (filtered from results). Patterns are globs (`tests/*`, `test_*`, `*_test.*`) matched against both full path and basename.
+
+## Metadata Sidecar Format (`.meta.yaml`)
 
 ```yaml
-# Auto-generated fields (regenerated by tooling, never manually edited)
-public_api: [login, logout, reset_password]
-dependencies: [config, db.user_model]
-used_by: [main, api.auth_routes]
-last_modified: "2025-06-14T10:30:00Z"
+public_api: [login, logout, reset_password]   # auto: regenerated by tools
+dependencies: [models.user, utils.hashing]     # auto: from imports
+used_by: [main, api.auth_routes]               # auto: reverse dependency graph
+last_modified: "2026-06-14T10:30:00Z"          # auto: timestamp
 
-# Curated fields (optional, can be agent-written or developer-written)
-summary: "User authentication: login, session management, password reset"
-tags: [auth, security, session]
-invariants:
-  - "db.connect() must be called before any session operation"
-  - "Passwords are never stored — only bcrypt hashes"
-examples: null
+summary: "User auth: login, session, password reset"  # curated
+tags: [auth, security, session]                        # curated
+invariants:                                            # curated
+  - "db.connect() must be called first"
+  - "Passwords are bcrypt hashes, never plaintext"
+examples: null                                         # curated
 ```
 
-### Placement
+### Curation Model
 
-```
-auth/
-  session.py
-  session.meta.yaml     ← sidecar lives next to its file
-  permissions.py
-  permissions.meta.yaml
-```
+Metadata is **agent-maintained**, not developer-maintained. The agent skill instructs agents to:
+- Bootstrap missing `.meta.yaml` files at session start
+- Update `summary`, `tags`, `public_api` when modifying a file
+- Backfill only files they touch — no mass curation campaigns
 
-### Curation strategy
+## Configuration (`.codexlr8.yaml`)
 
-Curation is **agent-guided**, not developer-maintained. A future agent skill will:
-
-- When an agent opens a file without a `.meta.yaml`, it generates one.
-- When an agent modifies a file, it updates the `.meta.yaml` if the public API changed.
-- The developer's only job is to keep the convention (sidecar next to source). The agent does the work.
-
-### Auto-generation and validation
-
-A CLI tool (`codexlr8 scan`) extracts auto fields:
-
-- `public_api` — top-level function/class/variable names
-- `dependencies` — import statements
-- `used_by` — reverse index computed from all `dependencies` fields across the project
-
-Curated fields are never overwritten — only validated (e.g., "`public_api` symbol not found in file" → warning).
-
----
-
-## The Search Engine
-
-### Stack
-
-**SQLite FTS5** with a custom Python indexing and ranking layer.
-
-Why SQLite FTS5:
-- Zero external dependencies (stdlib `sqlite3`)
-- FTS5 gives free features: stemming, prefix queries, phrase matching, BM25 ranking
-- Only the indexing + custom boosting layer needs to be written
-- No server process, no Docker, no API key
-
-### Indexing pipeline
-
-```
-1. Walk project directory
-2. For each source file:
-   a. Extract function/class/variable names          → layer 1
-   b. Extract docstrings (top-of-module + per-symbol) → layer 2
-   c. If .meta.yaml exists, read all fields          → layer 3
-3. Write to SQLite FTS5 table with per-field weight columns
+```yaml
+root: "."
+include: []                     # scope: only scan these directories
+exclude:                        # filter: skip these
+  - tests/*
+  - test_*
+  - *_test.*
+extensions:                     # file types to index
+  - .py
+  - .js
+  - .ts
+ignore_dirs:                    # skip directories entirely
+  - .git
+  - __pycache__
+  - node_modules
 ```
 
-### Ranking formula
+All fields have defaults. A missing config file uses `DEFAULT_EXTENSIONS` and `DEFAULT_IGNORE_DIRS` with no include restrictions. CLI `--exclude` flags override config for that command.
 
-```
-score = 0
-for each query token:
-  if exact match in public_api:        score += 1.0 * TF-IDF
-  elif match in tags:                  score += 0.8 * TF-IDF
-  elif match in summary:               score += 0.6 * TF-IDF
-  elif match in docstring:             score += 0.4 * TF-IDF
-  elif match in symbol name:           score += 0.3 * TF-IDF
+## MCP Integration
 
-# Penalties
-if path contains test/ or spec/ etc.:  score *= 0.5
-if file is __init__.py (re-export):    score *= 0.6
+Single tool: `codebase_search(query, path?, limit?, exclude?)`. Path defaults to config `root` or current directory. The MCP server runs as a subprocess and communicates over stdio per the Model Context Protocol.
 
-# Dependency boost
-if match_file.dependencies include other_file:
-  other_file.score += 0.15 * match_file.score
-```
+Agent calls `codebase_search(query="payment refund")` → gets ranked results with paths, line ranges, scores, summaries, tags, and preview snippets. No file read tool — agents use their existing read tool.
 
-### Query interface
+A companion `codebase_index(path?, incremental?, exclude?)` tool lets agents build or update the index from within a session.
 
-**Input:** a natural language string.
+## Design Decisions
 
-```
-codexlr8 search "login auth"
-```
+### Why no AST parsing?
 
-**Output:** a ranked list of precise locations with snippets.
+AST parsing requires per-language dependencies (tree-sitter grammars, Python AST, etc.) and still can't handle comments/docstrings well. Pure tokenization of file content across 20+ languages with FTS5 indexing is simpler, faster, and language-agnostic. The metadata layer provides precision where parsing would help.
 
-```
-1. auth/session.py:14-27  [score: 0.98]
-   symbol: login(username, password) -> Session
-   meta:    "User authentication: login, session management, password reset"
-   tags:    auth, security, session
-   preview: |
-     def login(username: str, password: str) -> Session:
-         """Authenticate a user and return a session token."""
-         user = db.verify_credentials(username, password)
-         ...
+### Why SQLite FTS5?
 
-2. auth/permissions.py:5-12  [score: 0.82]
-   symbol: require_auth (decorator)
-   meta:    "Permission decorators and auth guards"
-   tags:    auth, permissions
-   preview: |
-     def require_auth(func):
-         @wraps(func)
-         def wrapper(*args, **kwargs):
-             ...
+Zero dependencies (stdlib `sqlite3`). Free features: stemming, prefix queries, phrase matching, BM25 ranking. No server process. Portable across platforms. Scales fine for codebases up to millions of tokens.
 
-3. tests/test_auth.py:41-50  [score: 0.41]
-   symbol: test_login
-   meta:    "Integration tests for auth flow"
-   tags:    test, auth
-   preview: |
-     def test_login():
-         ...
-```
+### Why AND semantics?
 
-The agent gets path, line range, symbol, metadata, score, and the first ~10 lines. Enough to decide whether to read the file. **Whole files are never returned** — that defeats the token-saving purpose.
+OR semantics (the initial v0 approach) required "short queries" advice to work around noise. AND semantics means more terms = more precision, matching user expectations from Google. The post-filter threshold (≥50% match for 4+ token queries) handles the "all or nothing" problem gracefully.
 
-Every result includes a snippet so the agent can determine relevance without pulling the file — exactly like Google search result descriptions.
+### Why sidecars and not inline metadata?
 
----
+- Indexer reads YAML directly — no source parsing needed
+- Auto fields can be regenerated without touching source code
+- Works for any file type (code, SQL, Markdown, configs)
+- Reading a 15-line `.meta.yaml` costs ~50 tokens
 
-## How the Engine Matches — Examples
+## Future Work
 
-### Example 1: Exact API match
+- **Semantic search**: Optional embedding-based hybrid ranking for concept-level queries
+- **Cross-file dependency tracking**: Follow `dependencies` / `used_by` chains in search results
+- **Language-specific extractors**: Optional tree-sitter plug-ins for deeper analysis
+- **Watch mode**: `codexlr8 watch` — auto-reindex on file changes
+- **Multi-repo monorepo support**: Per-subproject configs
 
-**Query:** `"login"`
+## Project Constraints
 
-`auth/session.meta.yaml` has `public_api: [login, logout, ...]`. Exact match → score 0.98, rank 1.
-
-### Example 2: Disambiguating same-named files
-
-```
-notifications/email.py  → summary: "Email notification builder and sender"
-auth/email.py           → summary: "Email-based login and verification"
-```
-
-**Query:** `"email login"` → `auth/email.py` ranks higher because its summary hits both tokens.
-
-### Example 3: Test file penalty
-
-**Query:** `"cart checkout"`
-
-`cart/cart.py` and `tests/test_cart.py` both match `cart`. The test penalty pushes `test_cart.py` down.
-
-### Example 4: Symbol match via docstring (no `.meta.yaml`)
-
-```python
-# auth/session.py
-def create_session(user_id: int, device: str) -> Session:
-    """Initialize a new authenticated user session with device fingerprinting."""
-    ...
-```
-
-**Query:** `"authenticated user session"` → matches docstring → returns `auth/session.py` with moderate score (~0.55). Useful even without metadata.
-
-### Example 5: Dependent file boost
-
-`payments/processor.py` matches `"payment processing"` with high score. `cart/checkout.py` lists `payments.processor` as a dependency → gets a small transitive boost and appears lower in the results, surfacing related code the agent may need.
-
----
-
-## Competitive Landscape
-
-| Tool | What it does | Gap |
-|---|---|---|
-| **Sourcegraph** | Full-featured code search | Heavy server, human UI, no agent interface |
-| **Aider repo-map** | Condensed codebase overview | Inline map, no search, no metadata |
-| **Zoekt** (Google) | Trigram-based code search | Human UI, no metadata integration |
-| **GitHub Code Search** | Elasticsearch-based | Proprietary, no agent interface |
-| **ctags / cscope** | Symbol navigation | No ranking, no text search, no metadata |
-| **Livegrep** | Fast regex code search | Regex only, no ranking, no metadata |
-| **ast-grep** | Structural code patterns | Pattern-based, not natural language |
-
-None are built for an LLM agent as the primary consumer. CodeXLR8 fills this gap.
-
----
-
-## Benefits
-
-- **Token reduction: ~85–90%** per navigation task. For teams running dozens of agent sessions daily, this directly cuts API costs.
-- **Agent accuracy** — Precise results without noise from comments, vendored code, or tests. Dependency and invariants data reduce hallucinated assumptions.
-- **Zero-setup start** — Layer 1 (code symbols) works immediately on any codebase. Metadata is optional and additive.
-- **No forced restructuring** — Sidecars live beside source files. Adoptable one file at a time.
-- **Language-agnostic** — Code symbol extraction uses thin per-language adapters. Metadata format is universal.
-- **Metadata stays fresh** — Auto-fields are regenerated by tooling; curated fields are validated.
-
----
-
-## Implementation Plan — Phase by Phase
-
-### Phase 0: Project scaffold (0.5 day)
-
-- Python project with `pyproject.toml` / `setup.py`
-- `pip install`-able CLI: `codexlr8`
-- Test framework + CI linting
-
-### Phase 1: Code symbol scanner (1 day)
-
-Build the `codexlr8 scan` command that walks a project directory:
-
-- For Python: use `ast` to extract top-level function/class/variable names
-- For other languages: regex-based extraction (extendable to tree-sitter later)
-- Output: symbol map per file (names, line numbers)
-- Extract module-level and per-symbol docstrings
-- Write results to a JSON index file (intermediate format)
-
-**Deliverable:** `codexlr8 scan ./project` → produces symbols.json with all Layer 1 data.
-
-### Phase 2: Metadata sidecar support (0.5 day)
-
-- Read `.meta.yaml` files if present
-- Merge auto fields (public_api, dependencies) with curated fields
-- Validation: warn if `public_api` symbols don't exist in the source
-- CLI: `codexlr8 scan --init` bootstraps missing `.meta.yaml` files with auto-populated fields
-
-**Deliverable:** Layer 3 data available in the index.
-
-### Phase 3: Search engine core — SQLite FTS5 (1.5 days)
-
-- Build the FTS5 schema with per-field weight columns
-- Ingest Layer 1 + Layer 2 + Layer 3 data into the index
-- Implement the ranking formula (exact match boost, tag boost, summary boost, test penalty, re-export penalty, dependency boost)
-- Query parser: tokenize input, search FTS5, merge and rank results
-- Return structured results with path, line range, symbol, metadata, score, preview snippet
-
-**Deliverable:** `codexlr8 search "login auth"` → ranked results in terminal.
-
-### Phase 4: Search engine polish and CLI (1 day)
-
-- Cache index to disk, incremental updates (only re-scan changed files)
-- `--include-tests` flag to disable test penalty
-- `--format json` for machine-readable output
-- `codexlr8 index` rebuilds the full index
-- `codexlr8 status` shows index state (files indexed, staleness)
-- Performance: should return results in <100ms for codebases up to 10,000 files
-
-**Deliverable:** Production-ready CLI search engine, fully independent of any agent framework.
-
-### Phase 5: Agentic integration — MCP server (future)
-
-- Wrap the search engine in an MCP (Model Context Protocol) server
-- Expose two tools to the agent:
-  - `codebase_search(query: str)` → ranked results
-  - `codebase_read(path: str, lines: str)` → read specific file sections
-- Agent skill: auto-generates and updates `.meta.yaml` files during sessions
-- The agent never reads `META_INDEX.yaml` directly — it only calls the search tool
-
-### Phase 6: Semantic search (aspirational, future)
-
-- Add optional embedding-based search using a lightweight local vector store
-- Hybrid ranking: combine keyword (FTS5) + semantic (vector) scores
-- Enable queries like "how does the payment flow work" that map to multi-file dependency chains
-
----
-
-## Total Effort (Phases 0–4, search engine only)
-
-| Phase | What | Effort |
-|---|---|---|
-| 0 | Project scaffold | 0.5 day |
-| 1 | Code symbol scanner | 1 day |
-| 2 | Metadata sidecar support | 0.5 day |
-| 3 | Search engine core (SQLite FTS5) | 1.5 days |
-| 4 | Polish and CLI | 1 day |
-| **Total** | | **4.5 days** |
-
-A working, useful search engine for any codebase in under a week. The agentic integration (Phase 5) adds 1–2 days later.
-
----
-
-## When Is It Worth It?
-
-- Codebase has ≥100 files and agents are used regularly
-- Paying per token for LLM API access
-- Value agent accuracy and speed over raw grep
-
-For tiny projects (≤20 files), `ls` + `grep` is cheap enough and CodeXLR8 adds unnecessary overhead.
-
----
-
-## Final Summary
-
-CodeXLR8 is a **purpose-built codebase search engine for LLM coding agents**. It combines lightweight symbol extraction, docstring indexing, and optional structured metadata sidecars into an inverted index with ranking tuned for agent navigation — not human browsing.
-
-An agent queries it like Google: natural language in, ranked file locations with snippets out. No token burn on directory listings. No noise from comments and tests. No reading entire files to find one function.
-
-It works immediately on any codebase (Layer 1), gets progressively better with documentation (Layer 2), and reaches maximum precision with curated metadata (Layer 3). Built in under a week, no external dependencies, zero API keys.
+- No AST or tree-sitter parsing in core — tokenization only
+- No external services (DB servers, APIs, cloud dependencies)
+- Python 3.10+ only (no async/await except in MCP server)
+- FTS5 index stored as `.codexlr8_index.db` in project root
+- 100% local operation — no telemetry, no network access
