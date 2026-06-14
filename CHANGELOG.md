@@ -1,27 +1,34 @@
 # Changelog
 
-## [0.0.2] — Unreleased
+## [0.0.3] — Unreleased
 
-Search quality improvements from benchmark feedback.
+Search quality infrastructure: eval framework, fuzzy fallback, embeddings layer, fine-tuning.
 
 ### Added
-- **`--explain` / `-e`**: query token diagnostics showing per-token hit counts, filtered words, and quality signal
-- **`--grouped` / `-g`**: clusters search results by directory with `--scope` hints
-- **`--group-depth <n>`**: control directory depth for grouping (default 3)
-- **`--scope` / `-s`**: restrict search to a path prefix, applied as pre-score SQL filter
-- **Path weighting**: filename match (0.8×), filename component (0.7×), directory (0.5×) — works without metadata
-- **Coverage warning**: `status` warns when <10% of files have metadata
-- **Matched tokens**: each result includes which query tokens matched
+- **`eval` command**: measure search quality with Precision@1, MRR, Recall@5
+- **`--explain` / `-e`**: per-token hit counts, zero-match detection, quality signal
+- **`--grouped` / `-g`**: directory-clustered results with `--scope` hints
+- **`--scope` / `-s`**: SQL LIKE pre-filter for path-prefix search
+- **Fuzzy fallback**: difflib Levenshtein correction on zero results (config: `fuzzy: true`)
+- **Embeddings layer**: opt-in hybrid BM25 + cosine rerank via `embeddings.enabled`
+- **`train` command**: TSDAE fine-tune any sentence-transformers model on codebase
+- **`recommend-model` command**: suggest best model by codebase size
+- **Scope-granularity eval**: `file`, `scope`, `exact` assert modes with line overlap
+- **Incremental embed**: `--incremental` only re-embeds changed files
 
 ### Changed
-- Query semantics: replaced AND-then-OR fallback with pure OR + token-coverage scoring
-- Default excludes now include `examples/*`, `docs/*`, `tutorials/*`, `benchmarks/*`
-- JSON output format: `{"results": [...]}` instead of bare list (supports `explain`, `grouped` wrappers)
+- Query semantics: AND-then-OR → pure OR + token-coverage scoring
+- Default excludes: added `examples/*`, `docs/*`, `tutorials/*`, `benchmarks/*`
+- JSON output: `{"results": [...]}` wrapper with optional `explain`/`grouped` keys
 
 ### Fixed
-- Flat BM25 when metadata absent — path weighting now provides differentiation without sidecars
-- No path-weighting in ranking — `lib/foo.py` now outranks `examples/foo.py` for matching query
-- AND-then-OR precision hole — multi-token queries no longer return zero or too many flat-score results
+- Flat BM25 when metadata absent — path weighting provides differentiation
+- No path differentiation in ranking — filename, dir component weighting
+- AND-then-OR precision hole — multi-token queries no longer fail or return noise
+
+## [0.0.2] — 2026-06-14
+
+Search quality improvements from benchmark feedback. (Superseded by 0.0.3)
 
 ## [0.0.1] — First release
 

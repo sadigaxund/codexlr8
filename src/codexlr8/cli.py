@@ -836,6 +836,8 @@ Exclude patterns are globs that match file paths. Use `*` for wildcards.
 | Search within a directory | `codebase_search(query="...", scope="src/")` |
 | Cluster results by directory | Shell: `codexlr8 search . "query" --grouped` |
 | Diagnose query terms | Shell: `codexlr8 search . "query" --explain` |
+| Measure search accuracy | Shell: `codexlr8 eval . --queries q.json` |
+| Fine-tune embeddings | Shell: `codexlr8 train .` (needs `[embeddings]` extra) |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |

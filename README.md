@@ -66,6 +66,26 @@ codexlr8 search . "axes not hiding" --explain
 # Combine both — group, then scope to drill down
 ```
 
+### Search Quality & Fine-Tuning
+
+```bash
+# Measure search accuracy against known queries
+codexlr8 eval . --queries queries.json
+# Precision@1: 67%, MRR: 0.83, Recall@5: 67%
+
+# Typos are auto-corrected (fuzzy fallback on zero results)
+codexlr8 search . "funtion"  # → corrects to "function"
+
+# Opt-in embeddings: hybrid BM25 + semantic search
+# pip install codexlr8[embeddings]
+# set embeddings.enabled: true in .codexlr8.yaml
+
+# Fine-tune a model on YOUR codebase vocabulary
+codexlr8 recommend-model .   # picks the right model for your size
+codexlr8 train .              # TSDAE training, 5-45min on CPU
+codexlr8 eval .               # measure improvement
+```
+
 ## .meta.yaml Sidecars
 
 Optional YAML files next to source files, created by `codexlr8 init`:

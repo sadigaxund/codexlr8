@@ -59,6 +59,8 @@ src/codexlr8/
   cli.py         — Click CLI (scan, init, index, search, status, setup)
   mcp_server.py  — MCP stdio server wrapping SearchEngine
   eval.py        — Search quality evaluation and metrics
+  embeddings.py  — Embedding provider, cosine similarity, hybrid rerank
+  train.py       — TSDAE fine-tuning on codebase
 ```
 
 ## The Three-Layer Value Stack
@@ -331,13 +333,69 @@ OR with token-coverage scoring uses the scoring layer (path weighting, metadata 
 - Works for any file type (code, SQL, Markdown, configs)
 - Reading a 15-line `.meta.yaml` costs ~50 tokens
 
-## Future Work
+## Search Quality Infrastructure (Phase 8)
 
-- **Symbol-level indexing**: Detect function/class/method definitions vs. call sites via regex heuristics per language. Store definitions in a weighted FTS5 column (or separate table) so `def draw` scores higher than `ax.draw()`. This is the one language-level tuning that would meaningfully improve search precision — but only as an optional opt-in, never as a core dependency. Candidates: Python (def/class), JS/TS (function/class), Go (func/type), Rust (fn/struct/impl). Without AST/tree-sitter, this would use line-prefix patterns (e.g., `^\s*def\s+` in Python) approximated by regex, accepting ~95% accuracy for zero-dependency operation.
-- **Semantic search**: Optional embedding-based hybrid ranking for concept-level queries
-- **Cross-file dependency tracking**: Follow `dependencies` / `used_by` chains in search results
-- **Language-specific extractors**: Optional tree-sitter plug-ins for deeper analysis
-- **Watch mode**: `codexlr8 watch` — auto-reindex on file changes
+### Layer Cascade
+
+Search runs through a configurable layer cascade:
+
+```
+Query → FTS5 BM25 (always) → Fuzzy fallback (on zero) → Embedding hybrid rerank (opt-in)
+```
+
+Each layer toggles independently in `.codexlr8.yaml`:
+
+```yaml
+fuzzy: true
+embeddings:
+  enabled: false
+  model: all-MiniLM-L6-v2
+  bm25_weight: 0.6
+```
+
+### Fuzzy Fallback
+
+Triggered only when FTS5 returns zero results. Uses `difflib.get_close_matches` against the FTS5 vocabulary table (created lazily via `fts5vocab`) to correct typo'd tokens. Edit distance cutoff: 0.78. First-letter prefix filter for performance. Zero deps (stdlib only).
+
+### Embedding Layer (Opt-in)
+
+Requires `pip install codexlr8[embeddings]` (adds `sentence-transformers`).
+
+- **Storage**: JSON vectors in a `embeddings` table in the same `.codexlr8_index.db`
+- **Model**: Any sentence-transformers model (default: `all-MiniLM-L6-v2`, 23M params)
+- **Hybrid rerank**: normalized BM25 score blended with cosine similarity, default 60/40 weight
+- **Lazy loading**: model loaded on first search, never at import time
+- **Incremental**: `--incremental` only re-embeds changed files; removed files also cleaned from embeddings table
+
+### TSDAE Fine-Tuning
+
+`codexlr8 train .` adapts a pretrained model to the codebase vocabulary:
+
+1. Scan files, combine path + metadata + first 2000 chars of content
+2. Randomly mask 30% of tokens in each text (corruption)
+3. Train SentenceTransformer to denoise (reconstruct original)
+4. Save to `.codexlr8_model/`, update `.codexlr8.yaml` to use it
+
+Training time: ~50ms per file per epoch on CPU. 1,000 files → ~2.5 minutes. 50,000 files → ~2 hours.
+
+`codexlr8 recommend-model .` analyzes codebase size and suggests:
+- <500K tokens → `all-MiniLM-L6-v2` (23M, +5-8% MRR)
+- 500K-2M tokens → `all-MiniLM-L6-v2` (23M, +7-12% MRR)
+- >2M tokens → `all-mpnet-base-v2` (110M, +10-18% MRR)
+
+### Eval Framework
+
+`codexlr8 eval . --queries q.json` measures Precision@1, MRR, Recall@5. Three assert modes: `file` (path+rank), `scope` (line overlap), `exact` (≥80% line overlap). The feedback loop — eval, toggle layers, eval again — proves each layer's value before shipping.
+
+## Design Decisions (continued)
+
+### Future Work
+
+- **Symbol-level indexing** (see above)
+- **Semantic search enhancements**: Embeddings layer is in place. Future: sqlite-vec ANN acceleration, graph-based reranking, cross-file embedding similarity
+- **Cross-file dependency tracking**: Follow `dependencies` / `used_by` chains
+- **Language-specific extractors**: Optional tree-sitter plug-ins
+- **Watch mode**: `codexlr8 watch`
 - **Multi-repo monorepo support**: Per-subproject configs
 
 ## Project Constraints

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codexlr8"
-version = "0.0.2"
+version = "0.0.3"
 description = "A codebase search engine for LLM coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
