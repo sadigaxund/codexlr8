@@ -24,6 +24,7 @@ def load_config(project_path: str) -> dict:
 def _defaults() -> dict:
     return {
         "root": ".",
+        "fuzzy": True,
         "include": [],
         "exclude": [
             "tests/*",

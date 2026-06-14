@@ -8,6 +8,12 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+try:
+    from difflib import get_close_matches as _get_close_matches
+except ImportError:
+    def _get_close_matches(word, possibilities, n=3, cutoff=0.8):
+        return []
+
 from .config import load_config
 from .meta import META_EXTENSION, read_meta
 from .scanner import scan_project
@@ -358,6 +364,25 @@ class SearchEngine:
         )
         rows = cursor.fetchall()
 
+        # Fuzzy fallback: if FTS5 found nothing and fuzzy is enabled,
+        # try edit-distance corrections against the indexed vocabulary.
+        if not rows and self.config.get("fuzzy", True):
+            fuzzy_tokens = self._fuzzy_correct(conn, tokens)
+            if fuzzy_tokens and fuzzy_tokens != tokens:
+                fuzzy_query = " OR ".join(fuzzy_tokens)
+                cursor = conn.execute(
+                    "SELECT f.path, f.summary, f.tags, f.public_api, f.content, "
+                    "       m.is_init, rank "
+                    "FROM files f "
+                    "JOIN file_meta m ON f.path = m.path "
+                    "WHERE files MATCH ? "
+                    + scope_clause + " "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    [fuzzy_query] + scope_params + [fetch_limit],
+                )
+                rows = cursor.fetchall()
+
         # Post-filter: for multi-token queries, require >=50% token match
         min_ratio = 0.5 if len(tokens) >= 2 else 0.0
         results = []
@@ -454,6 +479,57 @@ class SearchEngine:
         score *= match_ratio
 
         return round(score, 4)
+
+    def _ensure_vocab(self, conn: sqlite3.Connection):
+        """Create FTS5 vocabulary table if it doesn't exist (lazy, on first fuzzy use)."""
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS ft_vocab "
+            "USING fts5vocab('files', 'row')"
+        )
+
+    def _fuzzy_correct(self, conn: sqlite3.Connection, tokens: list[str]) -> list[str]:
+        """Attempt to correct each token against the indexed vocabulary.
+
+        For each token with potential typos, finds close matches using
+        difflib against the FTS5 vocabulary (filtered by first-letter prefix).
+        Returns corrected token list, or original list if no corrections found.
+        """
+        self._ensure_vocab(conn)
+
+        corrected = []
+        any_corrected = False
+        for token in tokens:
+            # Numbers and very short tokens: skip fuzzy (unlikely typos)
+            if token.isdigit() or len(token) <= 2:
+                corrected.append(token)
+                continue
+
+            # Get vocabulary terms starting with same first letter
+            prefix_start = token[0]
+            prefix_end = token[0] + "z"  # range scan: a to az
+            cursor = conn.execute(
+                "SELECT term FROM ft_vocab WHERE term BETWEEN ? AND ? AND length(term) > 2",
+                (prefix_start, prefix_end),
+            )
+            # Limit to ~5000 terms for performance
+            vocab = []
+            for i, row in enumerate(cursor):
+                vocab.append(row["term"])
+                if i > 5000:
+                    break
+
+            if not vocab:
+                corrected.append(token)
+                continue
+
+            matches = _get_close_matches(token, vocab, n=1, cutoff=0.78)
+            if matches and matches[0] != token:
+                corrected.append(matches[0])
+                any_corrected = True
+            else:
+                corrected.append(token)
+
+        return corrected if any_corrected else tokens
 
     def _get_preview(self, relpath: str, tokens: list[str]) -> tuple[str, tuple[int, int]]:
         filepath = os.path.join(self.project_path, relpath)

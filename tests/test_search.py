@@ -289,6 +289,30 @@ class TestSearchEngine:
         assert '"login"' in result.output
         assert "matches" in result.output
 
+    def test_fuzzy_correction(self, tmp_path):
+        """Fuzzy fallback corrects typos via edit distance against vocab."""
+        engine = SearchEngine(str(tmp_path))
+        (tmp_path / "utils.py").write_text("def function_name(): pass\n")
+        engine.build_index()
+
+        # Exact match works normally
+        results = engine.search("function")
+        assert len(results) > 0
+
+        # Typo "funtion" — fuzzy should correct to "function"
+        results = engine.search("funtion")
+        assert len(results) > 0
+        assert "utils.py" in results[0]["path"]
+
+    def test_fuzzy_no_match_returns_empty(self, tmp_path):
+        """Uncorrectable typos still return no results."""
+        engine = SearchEngine(str(tmp_path))
+        (tmp_path / "utils.py").write_text("def hello(): pass\n")
+        engine.build_index()
+
+        results = engine.search("xyzqwert")
+        assert results == []
+
 
 class TestCLIIndexAndStatus:
     def test_index_command(self, sample_project):
