@@ -10,8 +10,20 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from .search import SearchEngine
+from .config import load_config
 
+_DEFAULT_PATH = os.getcwd()
 server = Server("codexlr8")
+
+
+def _resolve_path(arg_path: str | None) -> str:
+    """Resolve the project path from arg, config, or cwd."""
+    if arg_path and arg_path != ".":
+        return os.path.abspath(arg_path)
+    # Try reading config from cwd to get root
+    config = load_config(_DEFAULT_PATH)
+    root = config.get("root", ".")
+    return os.path.abspath(os.path.join(_DEFAULT_PATH, root))
 
 
 @server.list_tools()
@@ -95,7 +107,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def _handle_search(args: dict) -> list[TextContent]:
-    project_path = os.path.abspath(args.get("path", "."))
+    project_path = _resolve_path(args.get("path"))
     query = args["query"]
     limit = args.get("limit", 10)
     exclude = args.get("exclude")
@@ -126,7 +138,7 @@ async def _handle_search(args: dict) -> list[TextContent]:
 
 
 async def _handle_index(args: dict) -> list[TextContent]:
-    project_path = os.path.abspath(args.get("path", "."))
+    project_path = _resolve_path(args.get("path"))
     incremental = args.get("incremental", False)
     exclude = args.get("exclude")
 

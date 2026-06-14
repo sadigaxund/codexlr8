@@ -23,12 +23,25 @@ def load_config(project_path: str) -> dict:
 
 def _defaults() -> dict:
     return {
+        "root": ".",
+        "include": [],
         "exclude": [
-            "tests/",
-            "test/",
-            "spec/",
-            "__tests__/",
+            "tests/*",
+            "test/*",
+            "spec/*",
+            "__tests__/*",
             "test_*",
             "*_test.*",
+        ],
+        "extensions": [
+            ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".rb",
+            ".java", ".c", ".h", ".cpp", ".hpp", ".cc", ".hh",
+            ".cs", ".swift", ".kt", ".kts", ".scala", ".sh", ".bash",
+            ".sql", ".r", ".lua", ".pl", ".pm",
+        ],
+        "ignore_dirs": [
+            ".git", "__pycache__", "node_modules", ".venv", "venv",
+            ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+            "dist", "build", ".eggs", "*.egg-info",
         ],
     }

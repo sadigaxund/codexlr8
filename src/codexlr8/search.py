@@ -69,21 +69,30 @@ class SearchEngine:
         return conn
 
     def build_index(self, incremental: bool = False,
-                    exclude: list[str] | None = None) -> int:
+                    exclude: list[str] | None = None,
+                    include: list[str] | None = None) -> int:
         """Build the full search index.
 
         If incremental=True, only re-index changed/new/removed files.
-        If exclude is given, use those patterns; otherwise use config defaults.
+        include/exclude are glob patterns; fall back to config defaults.
 
         Returns number of files indexed/mutated.
         """
         if exclude is None:
             exclude = self.config.get("exclude", [])
+        if include is None:
+            include = self.config.get("include", [])
 
-        files_data = [
-            f for f in scan_project(self.project_path)
-            if not _matches_exclude(f["path"], exclude)
-        ]
+        root = self.config.get("root", ".")
+        scan_root = os.path.join(self.project_path, root)
+
+        files_data = scan_project(
+            scan_root,
+            extensions=self.config.get("extensions"),
+            ignore_dirs=self.config.get("ignore_dirs"),
+            include=include,
+            exclude=exclude,
+        )
 
         conn = self._get_connection()
 

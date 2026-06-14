@@ -32,11 +32,15 @@ def main():
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False))
 @click.option("--output", "-o", default=None, help="Write scan data to JSON file")
 def scan(project_path: str, output: str | None):
-    """Scan a project and show file counts and line counts.
-
-    PROJECT_PATH is the root directory of the codebase to scan.
-    """
-    results = scan_project(project_path)
+    """Scan a project and show file counts and line counts."""
+    config = load_config(project_path)
+    results = scan_project(
+        project_path,
+        extensions=config.get("extensions"),
+        ignore_dirs=config.get("ignore_dirs"),
+        include=config.get("include"),
+        exclude=config.get("exclude"),
+    )
     if output:
         import json
         with open(output, "w") as f:
@@ -173,25 +177,70 @@ def setup(project_path: str):
     click.echo("Press Enter to accept defaults, or type your own values.")
     click.echo()
 
-    # Exclude directories
-    click.echo("--- Exclude Patterns ---")
-    click.echo("Glob patterns for files and directories to skip during indexing and search.")
+    # Root
+    click.echo("--- Project Root ---")
+    click.echo("The directory to scan from. Default is the current directory.")
+    root = click.prompt("Project root", default=".").strip() or "."
     click.echo()
 
+    # Include patterns
+    click.echo("--- Include Patterns ---")
+    click.echo("Glob patterns for files to INCLUDE in the search scope.")
+    click.echo("Leave empty to scan everything (recommended for most projects).")
+    click.echo("Example: src/*, docs/*  (only scan src/ and docs/ directories)")
+    custom_include = click.prompt(
+        "Include patterns (comma-separated)",
+        default="",
+    ).strip()
+    include = [p.strip() for p in custom_include.split(",") if p.strip()]
+    click.echo()
+
+    # Exclude patterns
+    click.echo("--- Exclude Patterns ---")
+    click.echo("Glob patterns for files to EXCLUDE from indexing and search.")
+    click.echo()
     defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*"]
     default_str = ", ".join(defaults)
-
-    custom = click.prompt(
-        f"Exclude patterns (comma-separated)",
+    custom_exclude = click.prompt(
+        "Exclude patterns (comma-separated)",
         default=default_str,
     ).strip()
+    exclude = [p.strip() for p in custom_exclude.split(",") if p.strip()] if custom_exclude else defaults
 
-    if custom:
-        exclude = [p.strip() for p in custom.split(",") if p.strip()]
-    else:
-        exclude = defaults
+    # File extensions
+    click.echo()
+    click.echo("--- File Extensions ---")
+    click.echo("Which file extensions to scan for code. Defaults cover most languages.")
+    ext_defaults = [".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".rb",
+                    ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".swift",
+                    ".kt", ".sql", ".sh", ".lua"]
+    ext_str = ", ".join(ext_defaults)
+    custom_ext = click.prompt(
+        "File extensions (comma-separated)",
+        default=ext_str,
+    ).strip()
+    extensions = [p.strip() for p in custom_ext.split(",") if p.strip()] if custom_ext else ext_defaults
 
-    config = {"exclude": exclude}
+    # Ignore directories
+    click.echo()
+    click.echo("--- Ignored Directories ---")
+    click.echo("Directories to skip entirely (build artifacts, caches, dependencies).")
+    ig_defaults = [".git", "__pycache__", "node_modules", ".venv", "venv",
+                   ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"]
+    ig_str = ", ".join(ig_defaults)
+    custom_ig = click.prompt(
+        "Ignored directories (comma-separated)",
+        default=ig_str,
+    ).strip()
+    ignore_dirs = [p.strip() for p in custom_ig.split(",") if p.strip()] if custom_ig else ig_defaults
+
+    config = {
+        "root": root,
+        "include": include,
+        "exclude": exclude,
+        "extensions": extensions,
+        "ignore_dirs": ignore_dirs,
+    }
 
     click.echo()
     click.echo("Configuration:")
