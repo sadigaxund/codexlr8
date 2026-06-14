@@ -52,7 +52,8 @@ def _explain_query(query: str, tokens: list[str], results: list[dict]) -> dict:
             text = (
                 (r.get("summary") or "") + " " +
                 " ".join(r.get("tags", [])) + " " +
-                r.get("path", "")
+                r.get("path", "") + " " +
+                (r.get("preview") or "")
             ).lower()
             if token in text:
                 count += 1

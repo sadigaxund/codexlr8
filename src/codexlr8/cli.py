@@ -233,12 +233,12 @@ def eval_cmd(project_path: str, queries: str, limit: int):
 
     # Per-query table
     click.secho("  Query                             Expected            Mode   Lines    Rank  Score   Status", fg="cyan", bold=True)
-    click.secho("  " + "─" * 100, fg="cyan")
+    click.secho("  " + "─" * 105, fg="cyan")
 
     for r in metrics["results"]:
         query_str = f'"{r["query"]}"'.ljust(34)
         expected_str = r["expected"].ljust(20)
-        mode_str = r.get("assert", "file").ljust(6)
+        mode_str = r.get("assert", "file").ljust(7)
         lines_str = ""
         if r.get("line_start"):
             lines_str = f"{r['line_start']}-{r['line_end']}".ljust(8)
