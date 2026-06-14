@@ -237,15 +237,17 @@ class SearchEngine:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if incremental:
-            count = self._incremental_update(conn, files_data, now)
+            count, changed = self._incremental_update(conn, files_data, now)
+            embed_files = changed if changed else []
         else:
             count = self._full_rebuild(conn, files_data, now)
+            embed_files = files_data
 
         conn.commit()
 
-        # Embedding support: if embeddings are enabled, embed all indexed files
-        if self.config.get("embeddings", {}).get("enabled"):
-            self._embed_files(conn, files_data, now)
+        # Embedding support: if embeddings are enabled, embed indexed files
+        if embed_files and self.config.get("embeddings", {}).get("enabled"):
+            self._embed_files(conn, embed_files, now)
             conn.commit()
 
         conn.close()
@@ -260,7 +262,8 @@ class SearchEngine:
             count += 1
         return count
 
-    def _incremental_update(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> int:
+    def _incremental_update(self, conn: sqlite3.Connection, files_data: list[dict], now: str) -> tuple[int, list[dict]]:
+        """Returns (count, changed_entries) for incremental embedding."""
         current_files: dict[str, float] = {}
         file_data_map: dict[str, dict] = {}
         for entry in files_data:
@@ -273,19 +276,25 @@ class SearchEngine:
         indexed_map = {row["path"]: row["file_mtime"] for row in indexed}
 
         count = 0
+        changed = []
 
         removed = set(indexed_map) - set(current_files)
         for path in removed:
             conn.execute("DELETE FROM files WHERE path = ?", (path,))
             conn.execute("DELETE FROM file_meta WHERE path = ?", (path,))
+            try:
+                conn.execute("DELETE FROM embeddings WHERE path = ?", (path,))
+            except sqlite3.OperationalError:
+                pass  # embeddings table doesn't exist yet
             count += 1
 
         for path, mtime in current_files.items():
             if path not in indexed_map or mtime > indexed_map[path]:
                 self._index_file(conn, file_data_map[path], now, replace=True)
+                changed.append(file_data_map[path])
                 count += 1
 
-        return count
+        return count, changed
 
     def _index_file(self, conn: sqlite3.Connection, entry: dict, now: str, replace: bool = False):
         path = entry["path"]
