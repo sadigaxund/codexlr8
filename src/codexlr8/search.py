@@ -58,6 +58,53 @@ def _matches_exclude(path: str, excludes: list[str]) -> bool:
     return False
 
 
+def _group_results(results: list[dict], group_depth: int = 3) -> dict:
+    """Group flat search results by directory prefix for cluster display.
+
+    Returns a dict with 'groups', 'total_files', 'total_results'.
+    Each group has: prefix, count, max_score, files (top 3 per group).
+    """
+    if not results:
+        return {"groups": [], "total_files": 0, "total_results": 0}
+
+    groups: dict[str, list[dict]] = {}
+    seen_paths: set[str] = set()
+
+    for r in results:
+        path = r["path"]
+        dir_parts = path.split(os.sep)[:-1]  # exclude filename
+        if not dir_parts:
+            prefix = "."
+        else:
+            prefix = os.sep.join(dir_parts[:group_depth]) + os.sep
+
+        if prefix not in groups:
+            groups[prefix] = []
+        groups[prefix].append(r)
+        seen_paths.add(path)
+
+    group_list = []
+    for prefix, files in groups.items():
+        # Keep files sorted by score within group
+        files.sort(key=lambda f: f["score"], reverse=True)
+        group_list.append({
+            "prefix": prefix,
+            "count": len(files),
+            "max_score": files[0]["score"],
+            "files": files[:3],  # top 3 per group for display
+            "has_more": len(files) > 3,
+            "remaining": len(files) - 3 if len(files) > 3 else 0,
+        })
+
+    group_list.sort(key=lambda g: g["max_score"], reverse=True)
+
+    return {
+        "groups": group_list,
+        "total_files": len(seen_paths),
+        "total_results": len(results),
+    }
+
+
 class SearchEngine:
     """SQLite FTS5-backed search engine for a codebase."""
 

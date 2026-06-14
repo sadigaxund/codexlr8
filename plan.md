@@ -179,6 +179,43 @@ Two tools: `codebase_search(query, path?, limit?, exclude?, scope?)` and `codeba
 
 The MCP server runs as a subprocess and communicates over stdio per the Model Context Protocol. Results include paths, line ranges, scores, summaries, tags, matched tokens, and preview snippets. No file read tool — agents use their existing read tool.
 
+## Search Result Clustering
+
+The CLI supports an optional `--grouped` / `-g` flag that clusters flat search results by directory prefix before displaying them. This gives agents the same narrowing signal that `grep | awk | sort | uniq -c` gives human grep users.
+
+### Format
+
+```
+$ codexlr8 search . "get_visible" --grouped
+
+12 results in 3 directories (8 files) across project:
+
+lib/foo/  (5 files)
+  lib/foo/bar.py:486  [score: 0.90]
+    bar module summary
+  lib/foo/baz.py:120  [score: 0.70]
+    baz helper
+  lib/foo/qux.py:55  [score: 0.50]
+  ... and 2 more files
+
+src/core/  (2 files)
+  src/core/engine.py:10  [score: 0.60]
+
+...
+
+Use --scope <dir> to narrow results (e.g. --scope lib/foo/)
+```
+
+### Rules
+
+1. Groups are sorted by **max score** in the group, not total match count
+2. Up to 3 files shown per group; remaining shown as `... and N more files`
+3. Group depth defaults to 3 directory levels; configurable via `--group-depth <n>`
+4. Root-level files (no directory) group under `"."`
+5. A `--scope <dir>` hint at the bottom gives the agent a direct follow-up path
+6. Grouping is **CLI-only** — the MCP server and JSON output return flat results (or a `"grouped": true` wrapper in JSON when requested)
+7. When `--scope` is already active, the hint changes to "Already scoped."
+
 ## Design Decisions
 
 ### Why no AST parsing?

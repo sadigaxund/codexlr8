@@ -2,7 +2,7 @@
 
 import json
 
-from codexlr8.search import SearchEngine, _is_init_file, _tokenize, _matches_exclude
+from codexlr8.search import SearchEngine, _is_init_file, _tokenize, _matches_exclude, _group_results
 
 
 class TestHelpers:
@@ -26,6 +26,67 @@ class TestHelpers:
         assert _matches_exclude("vendor/lib/utils.py", ["vendor/*", "node_modules/*"])
         assert not _matches_exclude("auth/session.py", ["tests/*", "test_*"])
         assert not _matches_exclude("models.py", ["tests/*"])
+
+    def test_group_results_empty(self):
+        assert _group_results([]) == {"groups": [], "total_files": 0, "total_results": 0}
+
+    def test_group_results_multi_dir(self):
+        results = [
+            {"path": "lib/foo/bar.py", "score": 0.9, "summary": "bar module"},
+            {"path": "lib/foo/baz.py", "score": 0.7, "summary": "baz module"},
+            {"path": "lib/other/qux.py", "score": 0.8, "summary": "qux module"},
+            {"path": "src/main.py", "score": 0.5, "summary": "entry point"},
+        ]
+        grouped = _group_results(results, group_depth=3)
+        assert grouped["total_files"] == 4
+        assert grouped["total_results"] == 4
+        assert len(grouped["groups"]) == 3
+
+        # Sorted by max score: lib/foo/ (0.9), lib/other/ (0.8), src/ (0.5)
+        assert grouped["groups"][0]["prefix"] == "lib/foo/"
+        assert grouped["groups"][0]["count"] == 2
+        assert grouped["groups"][0]["max_score"] == 0.9
+        assert not grouped["groups"][0]["has_more"]
+        assert grouped["groups"][1]["prefix"] == "lib/other/"
+        assert grouped["groups"][2]["prefix"] == "src/"
+
+    def test_group_results_root_files(self):
+        results = [
+            {"path": "main.py", "score": 0.9},
+            {"path": "utils.py", "score": 0.7},
+        ]
+        grouped = _group_results(results)
+        assert len(grouped["groups"]) == 1
+        assert grouped["groups"][0]["prefix"] == "."
+
+    def test_group_results_depth_capping(self):
+        results = [
+            {"path": "a/b/c/d/e/file.py", "score": 0.9},
+        ]
+        grouped = _group_results(results, group_depth=2)
+        assert grouped["groups"][0]["prefix"] == "a/b/"
+
+    def test_group_results_truncates_per_group(self):
+        results = [
+            {"path": f"lib/many/file_{i}.py", "score": 0.9 - i * 0.01}
+            for i in range(10)
+        ]
+        grouped = _group_results(results)
+        g = grouped["groups"][0]
+        assert g["count"] == 10
+        assert len(g["files"]) == 3
+        assert g["has_more"]
+        assert g["remaining"] == 7
+
+    def test_group_results_sorts_by_max_score(self):
+        results = [
+            {"path": "lib/low/file.py", "score": 0.3},
+            {"path": "src/high/main.py", "score": 0.9},
+            {"path": "lib/low/other.py", "score": 0.1},
+        ]
+        grouped = _group_results(results)
+        assert grouped["groups"][0]["prefix"] == "src/high/"
+        assert grouped["groups"][1]["prefix"] == "lib/low/"
 
 
 class TestSearchEngine:
@@ -173,6 +234,22 @@ class TestSearchEngine:
         # auth files should not appear
         auth_lines = [l for l in lines if "auth/" in l]
         assert not auth_lines
+
+    def test_search_cli_grouped(self, sample_project):
+        from click.testing import CliRunner
+        from codexlr8.cli import search
+
+        engine = SearchEngine(str(sample_project))
+        engine.build_index()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            search, [str(sample_project), "login", "--grouped"]
+        )
+        assert result.exit_code == 0
+        # Should show directory groupings and the scope hint
+        assert "Use --scope" in result.output
+        assert "(" in result.output  # file count per dir
 
 
 class TestCLIIndexAndStatus:

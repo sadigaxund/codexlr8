@@ -1,12 +1,13 @@
 """CodeXLR8 CLI — search-first codebase navigation for agents."""
 
 import asyncio
+import os
 import click
 
 from .config import load_config
 from .scanner import scan_project
 from .meta import generate_missing_sidecars
-from .search import SearchEngine
+from .search import SearchEngine, _group_results
 
 
 EXCLUDE_HELP = (
@@ -64,11 +65,16 @@ def scan(project_path: str, output: str | None):
               callback=_parse_excludes, help=EXCLUDE_HELP)
 @click.option("--scope", "-s", default=None,
               help="Restrict search to files under a path prefix (e.g. src/ or lib/mpl_toolkits/)")
+@click.option("--grouped", "-g", is_flag=True, default=False,
+              help="Cluster results by directory before listing files")
+@click.option("--group-depth", default=3,
+              help="Max directory depth for grouping (default: 3)")
 @click.option("--format", "-f", "output_format",
               type=click.Choice(["text", "json"]), default="text")
 @click.option("--limit", "-n", default=10, help="Maximum number of results")
 def search(project_path: str, query: str, exclude_patterns: list[str],
-           scope: str | None, output_format: str, limit: int):
+           scope: str | None, grouped: bool, group_depth: int,
+           output_format: str, limit: int):
     """Search the codebase for code matching QUERY.
 
     PROJECT_PATH is the root directory of the codebase to search.
@@ -76,6 +82,7 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
     \b
     Examples:
       codexlr8 search . "login auth"
+      codexlr8 search . "login auth" --grouped
       codexlr8 search . "login auth" --exclude "tests/*"
       codexlr8 search . "login auth" -x "tests/*" -x "vendor/*"
       codexlr8 search . "get_visible" --scope lib/mpl_toolkits/
@@ -85,11 +92,28 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
 
     if output_format == "json":
         import json
-        click.echo(json.dumps(results, indent=2))
+        if grouped:
+            groups_data = _group_results(results, group_depth)
+            click.echo(json.dumps({
+                "grouped": True,
+                "groups": groups_data["groups"],
+                "summary": {
+                    "total_results": groups_data["total_results"],
+                    "total_files": groups_data["total_files"],
+                    "total_groups": len(groups_data["groups"]),
+                },
+                "results": results,
+            }, indent=2))
+        else:
+            click.echo(json.dumps(results, indent=2))
         return
 
     if not results:
         click.echo("No results found.")
+        return
+
+    if grouped:
+        _print_grouped(results, group_depth, scope)
         return
 
     for i, r in enumerate(results, 1):
@@ -314,6 +338,57 @@ def setup(project_path: str):
     click.echo()
     click.secho("  Setup complete.", fg="cyan", bold=True)
     click.secho("  Run 'codexlr8 index .' to build your first search index.", dim=True)
+
+
+def _print_grouped(results: list[dict], group_depth: int, scope: str | None):
+    """Print search results clustered by directory."""
+    groups_data = _group_results(results, group_depth)
+    groups = groups_data["groups"]
+    total = groups_data["total_results"]
+    files = groups_data["total_files"]
+
+    scope_label = f"in {scope}" if scope else "across project"
+    click.echo(f"{total} results in {len(groups)} directories ({files} files) {scope_label}:")
+    click.echo()
+
+    top_groups = groups[:5]
+    for g in top_groups:
+        # Directory header with match count
+        label = g["prefix"].rstrip(os.sep)
+        click.echo(f"{label}/  ({g['count']} files)")
+
+        for f in g["files"]:
+            line_info = f"{f['path']}:{f['line_start']}-{f['line_end']}"
+            score_info = f"{f['score']:.2f}"
+            click.echo(f"  {click.style(line_info, fg='cyan')}  "
+                       f"[score: {score_info}]")
+
+            # Summary line from preview or metadata
+            if f.get("summary"):
+                click.echo(f"    {f['summary']}")
+            elif f.get("preview"):
+                first_line = f["preview"].strip().splitlines()[0].strip() if f["preview"].strip() else ""
+                if first_line:
+                    click.echo(f"    {first_line[:100]}")
+
+        if g["has_more"]:
+            click.echo(f"  ... and {g['remaining']} more files")
+        click.echo()
+
+    if len(groups) > 5:
+        click.echo(f"... and {len(groups) - 5} more directories")
+
+    # Scope hint
+    click.echo()
+    if scope:
+        click.echo(click.style("Already scoped. Remove --scope to broaden.", dim=True))
+    else:
+        click.echo(
+            click.style(
+                f"Use --scope <dir> to narrow results (e.g. --scope {top_groups[0]['prefix']})",
+                dim=True
+            )
+        )
 
 
 def _inject_mcp_config(config_path: str, mcp_json: str) -> None:
