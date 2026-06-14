@@ -395,6 +395,8 @@ class SearchEngine:
             "files_without_meta": 0,
             "total_lines": 0,
             "index_age": "No index yet",
+            "coverage_pct": 0.0,
+            "warning": None,
         }
 
         if not os.path.exists(self.db_path):
@@ -412,6 +414,17 @@ class SearchEngine:
 
         row = conn.execute("SELECT SUM(content_size) as total FROM file_meta").fetchone()
         result["total_lines"] = row["total"] or 0
+
+        if result["files_indexed"] > 0:
+            result["coverage_pct"] = round(
+                (result["files_with_meta"] / result["files_indexed"]) * 100, 1
+            )
+
+        if result["files_indexed"] > 0 and result["coverage_pct"] < 10.0:
+            result["warning"] = (
+                f"Only {result['coverage_pct']}% of files have metadata. "
+                "Search quality will be degraded. Run 'codexlr8 init .' to bootstrap."
+            )
 
         mtime = os.path.getmtime(self.db_path)
         mtime_dt = datetime.fromtimestamp(mtime)

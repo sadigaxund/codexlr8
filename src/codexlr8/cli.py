@@ -154,6 +154,10 @@ def status(project_path: str):
     click.echo(f"Files without .meta.yaml: {state['files_without_meta']}")
     click.echo(f"Total lines indexed: {state['total_lines']}")
     click.echo(f"Index age: {state.get('index_age', 'N/A')}")
+    click.echo(f"Coverage: {state.get('coverage_pct', 0)}%")
+    if state.get("warning"):
+        click.echo()
+        click.secho(f"  Warning: {state['warning']}", fg="yellow")
 
 
 @main.command()
