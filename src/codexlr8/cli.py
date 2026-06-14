@@ -203,6 +203,64 @@ def status(project_path: str):
 
 
 @main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False))
+@click.option("--queries", "-q", required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON file with query definitions")
+@click.option("--limit", "-n", default=10,
+              help="Max results per query (default: 10)")
+def eval_cmd(project_path: str, queries: str, limit: int):
+    """Evaluate search quality against a query set.
+
+    QUERIES is a JSON file with an array of query objects:
+    [{"query": "...", "expected": "path/to/file.py", "min_rank": 1}]
+
+    Outputs a per-query pass/fail table and aggregate metrics:
+    Precision@1, Mean Reciprocal Rank (MRR), Recall@5.
+    """
+    from .eval import load_queries, run_eval
+    import json
+
+    try:
+        query_defs = load_queries(queries)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise click.ClickException(f"Invalid queries file: {e}")
+
+    if not query_defs:
+        raise click.ClickException("Queries file contains no queries.")
+
+    metrics = run_eval(project_path, query_defs, limit=limit)
+
+    # Per-query table
+    click.secho("  Query                             Expected                Rank  Score   Status", fg="cyan", bold=True)
+    click.secho("  " + "─" * 85, fg="cyan")
+
+    for r in metrics["results"]:
+        query_str = f'"{r["query"]}"'.ljust(36)
+        expected_str = r["expected"].ljust(23)
+        rank_str = str(r["rank"]).ljust(6) if r["rank"] else "—     "
+        score_str = f'{r["score"]:.2f}'.ljust(8) if r["score"] else "—       "
+        status = r["status"]
+
+        if status.startswith("pass"):
+            status_style = {"fg": "green"}
+        elif "found" in status:
+            status_style = {"fg": "yellow"}
+        else:
+            status_style = {"fg": "red"}
+
+        click.echo(f"  {query_str} {expected_str} {rank_str} {score_str} {click.style(status, **status_style)}")
+
+    # Aggregate metrics
+    click.echo()
+    click.echo(click.style("  " + "─" * 40, fg="cyan"))
+    click.secho(f"  Precision@1:  {metrics['precision_at_1']:.2%}  "
+                f"({metrics['passed']}/{metrics['num_queries']} passed)", fg="green")
+    click.secho(f"  MRR:          {metrics['mrr']:.4f}", fg="green")
+    click.secho(f"  Recall@5:     {metrics['recall_at_5']:.2%}", fg="green")
+
+
+@main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
 def setup(project_path: str):
     """Interactively create a .codexlr8.yaml configuration file.

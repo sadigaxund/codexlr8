@@ -58,6 +58,7 @@ src/codexlr8/
   config.py      — .codexlr8.yaml loading with defaults
   cli.py         — Click CLI (scan, init, index, search, status, setup)
   mcp_server.py  — MCP stdio server wrapping SearchEngine
+  eval.py        — Search quality evaluation and metrics
 ```
 
 ## The Three-Layer Value Stack
@@ -217,6 +218,58 @@ Query analysis:
 - No auto-suggestions — the LLM agent knows the task context and is better at choosing replacements
 - No confidence thresholds — what's "strong" varies by codebase metadata coverage
 - No per-file token breakdown — use `matched_tokens` on individual results for that
+
+## Search Quality Evaluation (`eval`)
+
+The `eval` command measures search accuracy against a known query set, giving deterministic before/after metrics for any layer change.
+
+```
+$ codexlr8 eval . --queries queries.json
+
+  Query                   Expected          Rank  Score   Status
+  ────────────────────────────────────────────────────────────────
+  "login auth"            auth/session.py    1    1.60    ✓
+  "checkout cart"         cart/cart.py        2    0.90    ✓ (top-3)
+  "payment stripe"        payments/stripe.py  —    —       ✗ not found
+
+  ────────────────────────────────────────
+  Precision@1:  50%  (2/4)
+  MRR:          0.71
+  Recall@5:     75%  (3/4)
+```
+
+### Queries file schema
+
+```json
+[
+  {"query": "login auth", "expected": "auth/session.py", "min_rank": 1},
+  {"query": "checkout",  "expected": "cart/cart.py",     "min_rank": 3}
+]
+```
+
+| Field | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `query` | yes | — | Search query to test |
+| `expected` | yes | — | File path that should appear in results |
+| `min_rank` | no | 1 | Required position (1=must be #1, 3=top-3) |
+
+### Metrics
+
+| Metric | Formula | Meaning |
+|--------|---------|---------|
+| Precision@1 | (rank-1 matches) / total | How often the correct file is first |
+| MRR | Σ(1/rank) / total | Reciprocal rank averaged — accounts for position |
+| Recall@5 | (found in top-5) / total | How often the file appears at all |
+
+### Workflow
+
+```bash
+codexlr8 eval . --queries baseline.json   # measure current setup
+vim .codexlr8.yaml                         # toggle a layer (fuzzy, embeddings)
+codexlr8 eval . --queries baseline.json   # measure again → see delta
+```
+
+The eval framework is the prerequisite for every search quality improvement — it proves a layer helps before shipping it.
 
 ## Search Result Clustering
 
