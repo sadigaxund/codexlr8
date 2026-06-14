@@ -243,7 +243,8 @@ def setup(project_path: str):
     include = [p.strip() for p in custom_include.split(",") if p.strip()]
     click.echo()
 
-    defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*"]
+    defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*",
+                "examples/*", "docs/*", "tutorials/*", "benchmarks/*"]
     custom_exclude = click.prompt(
         click.style("    Exclude (comma-separated)", fg="bright_white"),
         default=", ".join(defaults),

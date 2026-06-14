@@ -32,6 +32,10 @@ def _defaults() -> dict:
             "__tests__/*",
             "test_*",
             "*_test.*",
+            "examples/*",
+            "docs/*",
+            "tutorials/*",
+            "benchmarks/*",
         ],
         "extensions": [
             ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".rb",
