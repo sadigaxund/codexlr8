@@ -242,6 +242,12 @@ class SearchEngine:
             count = self._full_rebuild(conn, files_data, now)
 
         conn.commit()
+
+        # Embedding support: if embeddings are enabled, embed all indexed files
+        if self.config.get("embeddings", {}).get("enabled"):
+            self._embed_files(conn, files_data, now)
+            conn.commit()
+
         conn.close()
         return count
 
@@ -408,6 +414,20 @@ class SearchEngine:
                 "matched_tokens": matched,
             })
 
+        # Embedding hybrid rerank: blend BM25 scores with cosine similarity
+        if results and self.config.get("embeddings", {}).get("enabled"):
+            try:
+                from .embeddings import EmbeddingProvider, load_embeddings
+                emb_cfg = self.config.get("embeddings", {})
+                provider = EmbeddingProvider(emb_cfg.get("model", "all-MiniLM-L6-v2"))
+                query_vec = provider.embed([query])[0]
+                stored = load_embeddings(conn)
+                bm25_w = emb_cfg.get("bm25_weight", 0.6)
+                embed_w = 1.0 - bm25_w
+                self._blend_scores(results, query_vec, stored, bm25_w, embed_w)
+            except ImportError:
+                pass
+
         conn.close()
         results.sort(key=lambda r: r["score"], reverse=True)
 
@@ -530,6 +550,53 @@ class SearchEngine:
                 corrected.append(token)
 
         return corrected if any_corrected else tokens
+
+    def _embed_files(self, conn: sqlite3.Connection, files_data: list[dict], now: str):
+        """Embed indexed files using the configured embedding model."""
+        from .embeddings import (
+            EmbeddingProvider, init_embeddings_table, store_embeddings,
+        )
+        emb_cfg = self.config.get("embeddings", {})
+        provider = EmbeddingProvider(emb_cfg.get("model", "all-MiniLM-L6-v2"))
+
+        init_embeddings_table(conn)
+
+        # Collect texts to embed
+        texts: list[tuple[str, str]] = []
+        for entry in files_data:
+            abspath = os.path.join(self.project_path, entry["path"])
+            meta = read_meta(abspath + META_EXTENSION) or {}
+            summary = meta.get("summary", "")
+            tags = meta.get("tags", [])
+            text = f"{entry['path']} {summary} {' '.join(tags)} {entry['content'][:2000]}"
+            texts.append((entry["path"], text))
+
+        if not texts:
+            return
+
+        paths = [t[0] for t in texts]
+        contents = [t[1] for t in texts]
+        vectors = provider.embed(contents)
+
+        for path, vec in zip(paths, vectors):
+            store_embeddings(conn, path, vec, now)
+
+    def _blend_scores(self, results, query_vec, stored_vectors, bm25_w, embed_w):
+        """Blend _compute_score output with cosine similarity from embeddings."""
+        from .embeddings import cosine_similarity
+
+        scores = [r["score"] for r in results]
+        if not scores:
+            return
+        max_s = max(scores)
+        min_s = min(scores)
+        s_range = max_s - min_s if max_s != min_s else 1.0
+
+        for r in results:
+            bm25_norm = (r["score"] - min_s) / s_range
+            vec = stored_vectors.get(r["path"])
+            cosine = cosine_similarity(query_vec, vec) if vec else 0.0
+            r["score"] = round(bm25_w * bm25_norm + embed_w * cosine, 4)
 
     def _get_preview(self, relpath: str, tokens: list[str]) -> tuple[str, tuple[int, int]]:
         filepath = os.path.join(self.project_path, relpath)

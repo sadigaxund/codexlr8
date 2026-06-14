@@ -37,6 +37,9 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+embeddings = [
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 codexlr8 = "codexlr8.cli:main"

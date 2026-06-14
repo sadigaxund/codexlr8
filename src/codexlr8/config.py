@@ -25,6 +25,11 @@ def _defaults() -> dict:
     return {
         "root": ".",
         "fuzzy": True,
+        "embeddings": {
+            "enabled": False,
+            "model": "all-MiniLM-L6-v2",
+            "bm25_weight": 0.6,
+        },
         "include": [],
         "exclude": [
             "tests/*",
