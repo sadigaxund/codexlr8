@@ -232,12 +232,18 @@ def eval_cmd(project_path: str, queries: str, limit: int):
     metrics = run_eval(project_path, query_defs, limit=limit)
 
     # Per-query table
-    click.secho("  Query                             Expected                Rank  Score   Status", fg="cyan", bold=True)
-    click.secho("  " + "─" * 85, fg="cyan")
+    click.secho("  Query                             Expected            Mode   Lines    Rank  Score   Status", fg="cyan", bold=True)
+    click.secho("  " + "─" * 100, fg="cyan")
 
     for r in metrics["results"]:
-        query_str = f'"{r["query"]}"'.ljust(36)
-        expected_str = r["expected"].ljust(23)
+        query_str = f'"{r["query"]}"'.ljust(34)
+        expected_str = r["expected"].ljust(20)
+        mode_str = r.get("assert", "file").ljust(6)
+        lines_str = ""
+        if r.get("line_start"):
+            lines_str = f"{r['line_start']}-{r['line_end']}".ljust(8)
+        else:
+            lines_str = "—".ljust(8)
         rank_str = str(r["rank"]).ljust(6) if r["rank"] else "—     "
         score_str = f'{r["score"]:.2f}'.ljust(8) if r["score"] else "—       "
         status = r["status"]
@@ -249,7 +255,7 @@ def eval_cmd(project_path: str, queries: str, limit: int):
         else:
             status_style = {"fg": "red"}
 
-        click.echo(f"  {query_str} {expected_str} {rank_str} {score_str} {click.style(status, **status_style)}")
+        click.echo(f"  {query_str} {expected_str} {mode_str} {lines_str} {rank_str} {score_str} {click.style(status, **status_style)}")
 
     # Aggregate metrics
     click.echo()
