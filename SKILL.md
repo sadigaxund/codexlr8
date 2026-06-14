@@ -18,7 +18,43 @@ codebase_search(query="stripe charge customer refund")
 codebase_search(query="shopping cart checkout payment")
 ```
 
-Describe what you're looking for in natural language. The engine uses OR semantics with a scoring layer — more terms increase precision through token-coverage ranking, not a hard AND requirement. No need to limit to a specific number of words.
+### Query strategy
+
+Describe what you're looking for in natural language. The engine uses OR semantics with a scoring layer — more terms increase precision through token-coverage ranking, not a hard AND requirement.
+
+**Good queries use distinct, discriminating terms:**
+
+| Task | Good query | Why |
+|---|---|---|
+| Fix login bug | `"login auth session token"` | Covers auth module, session, tokens — distinct terms, not synonyms |
+| Payment refund | `"stripe refund charge customer"` | Each term narrows to a different aspect of the feature |
+| 3D plot visibility | `"axes3d draw visible renderer"` | Domain term + method + symptom — different dimensions of the bug |
+| Checkout flow | `"checkout cart payment order"` | Covers all stages of the flow |
+
+**What to avoid:**
+- Single-word queries (`"login"`) — too broad, returns everything mentioning login
+- Synonyms (`"login authenticate signin"`) — redundant, wastes tokens without improving coverage
+- Full sentences (`"I need to find where user login happens"`) — stop words like `"I"`, `"need"`, `"to"` are filtered out
+
+### Using scope and grouping
+
+When you know which directory the code lives in, scope the search:
+
+```
+codebase_search(query="get_visible", scope="lib/mpl_toolkits/")
+```
+
+When you don't know, run a shell command to see where results cluster:
+
+```bash
+codexlr8 search . "get_visible" --grouped
+```
+
+This prints directories ranked by their highest-scoring file, with a `--scope` hint to copy into your next MCP call.
+
+### When results don't look right
+
+Check the `matched` field on each result. If a file you expected isn't showing, the missing token tells you what to adjust. If all results only match 1 of 4 tokens, your terms are too scattered — try removing one.
 
 ## Interpreting results
 
