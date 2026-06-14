@@ -53,7 +53,7 @@ Existing tools (Sourcegraph, Zoekt, ctags, Livegrep, GitHub Code Search) are des
 ```
 src/codexlr8/
   scanner.py     — Walk project, read raw file content
-  search.py      — SQLite FTS5 index, AND-semantics query, ranking
+  search.py      — SQLite FTS5 index, OR-semantics query with token-coverage scoring
   meta.py        — .meta.yaml read/write/generate/validate
   config.py      — .codexlr8.yaml loading with defaults
   cli.py         — Click CLI (scan, init, index, search, status, setup)
@@ -64,11 +64,12 @@ src/codexlr8/
 
 | Layer | Source | What | Weight |
 |---|---|---|---|
-| 1 | File content | Function names, variable names, comments, docstrings | BM25 base |
-| 2 | `.meta.yaml` curated fields | summary + tags | 0.6–0.8× boost |
+| 1 | File content | Function names, variable names, comments, docstrings | 0.3× per token |
+| 2a | File path | Filename, directory components | 0.5–0.8× per token |
+| 2b | `.meta.yaml` curated fields | summary + tags | 0.6–0.8× boost |
 | 3 | `.meta.yaml` public_api | Explicit symbol list | 1.0× boost |
 
-**Layer 1** works immediately, zero setup, on any codebase. **Layers 2–3** add precision through optional human/agent curation.
+**Layer 1** and **2a** work immediately, zero setup, on any codebase — path weighting provides differentiation even without metadata. **Layers 2b–3** add precision through optional human/agent curation.
 
 ## Search Engine Design
 
@@ -88,9 +89,7 @@ A companion `file_meta` table stores `content_size`, `has_meta`, `is_init`, `fil
 
 ### Query Semantics
 
-**AND by default — like Google.** All query tokens must appear in the indexed document. This eliminates the noise of OR semantics where a 10-word query matches every file containing "the" or "is".
-
-Fallback: if AND returns nothing (rare for multi-token queries), the engine retries with OR and applies a post-filter requiring ≥50% of query tokens to match the document.
+**OR with token-coverage scoring.** All tokens are searched with OR. A custom scoring layer (path weighting, metadata boosts, match ratio) surfaces files that match more tokens. A post-filter requires ≥50% token match for multi-token queries. This replaces the previous AND-then-OR fallback, which caused precise multi-token queries to return zero results (AND too strict) or too many flatly-scored results (OR fallback with no differentiation).
 
 ### Tokenization
 
@@ -103,9 +102,12 @@ score = (∑ token_boost) × match_ratio
 
 token_boost:
   token ∈ public_api     → 1.0
+  token == filename      → 0.8   (e.g. "axes3d" in axes3d.py)
   token ∈ tags           → 0.8
+  token ∈ filename_part  → 0.7   (e.g. "axes3d" in rotate_axes3d_sgskip.py)
   token ∈ summary        → 0.6
-  token ∈ content (BM25) → 0.3
+  token ∈ dir_path       → 0.5   (e.g. "mplot3d" in lib/mpl_toolkits/mplot3d/)
+  token ∈ content (FTS5) → 0.3
 
 match_ratio: matched_tokens / total_query_tokens
 
@@ -113,13 +115,15 @@ Penalties:
   __init__.py            → score × 0.6
 ```
 
+Path weighting means a file whose name IS the query token ranks above one that merely mentions it in content. Directory-component matching provides a middle tier. This gives the engine differentiation even when metadata is absent.
+
 ### Incremental Indexing
 
 Tracks `file_mtime` per indexed file. `--incremental` mode compares timestamps and only re-indexes changed, new, or deleted files. Removed files are dropped from the index.
 
 ### Exclusion
 
-Files are excluded at **index time** (never enter the index) and **query time** (filtered from results). Patterns are globs (`tests/*`, `test_*`, `*_test.*`) matched against both full path and basename.
+Files are excluded at **index time** (never enter the index) and **query time** (filtered from results). Patterns are globs matched against both full path and basename. Default excludes: `tests/*`, `test/*`, `spec/*`, `__tests__/*`, `test_*`, `*_test.*`, `examples/*`, `docs/*`, `tutorials/*`, `benchmarks/*`.
 
 ## Metadata Sidecar Format (`.meta.yaml`)
 
@@ -167,11 +171,13 @@ All fields have defaults. A missing config file uses `DEFAULT_EXTENSIONS` and `D
 
 ## MCP Integration
 
-Single tool: `codebase_search(query, path?, limit?, exclude?)`. Path defaults to config `root` or current directory. The MCP server runs as a subprocess and communicates over stdio per the Model Context Protocol.
+Two tools: `codebase_search(query, path?, limit?, exclude?, scope?)` and `codebase_index(path?, incremental?, exclude?)`.
 
-Agent calls `codebase_search(query="payment refund")` → gets ranked results with paths, line ranges, scores, summaries, tags, and preview snippets. No file read tool — agents use their existing read tool.
+**`codebase_search`**: `path` defaults to config `root` or current directory. `scope` restricts results to a path prefix (like `grep -rn "pattern" directory/`), applied as a pre-score SQL filter. `exclude` patterns filter results post-score.
 
-A companion `codebase_index(path?, incremental?, exclude?)` tool lets agents build or update the index from within a session.
+**`codebase_index`**: builds or incrementally updates the search index.
+
+The MCP server runs as a subprocess and communicates over stdio per the Model Context Protocol. Results include paths, line ranges, scores, summaries, tags, matched tokens, and preview snippets. No file read tool — agents use their existing read tool.
 
 ## Design Decisions
 
@@ -183,9 +189,11 @@ AST parsing requires per-language dependencies (tree-sitter grammars, Python AST
 
 Zero dependencies (stdlib `sqlite3`). Free features: stemming, prefix queries, phrase matching, BM25 ranking. No server process. Portable across platforms. Scales fine for codebases up to millions of tokens.
 
-### Why AND semantics?
+### Why OR semantics with scoring?
 
-OR semantics (the initial v0 approach) required "short queries" advice to work around noise. AND semantics means more terms = more precision, matching user expectations from Google. The post-filter threshold (≥50% match for 4+ token queries) handles the "all or nothing" problem gracefully.
+Pure AND was too strict — a 4-token query frequently returned zero results because code rarely contains all exact words together. Pure OR was too noisy — a 10-word query matched thousands of files. The AND-then-OR fallback was fragile: precise queries hit the OR wall and got flatly-scored noise.
+
+OR with token-coverage scoring uses the scoring layer (path weighting, metadata boosts, match ratio) to naturally surface files matching more tokens. A ≥50% post-filter for multi-token queries eliminates single-token noise. The result: more tokens = higher score, not zero results.
 
 ### Why sidecars and not inline metadata?
 
@@ -196,6 +204,7 @@ OR semantics (the initial v0 approach) required "short queries" advice to work a
 
 ## Future Work
 
+- **Symbol-level indexing**: Detect function/class/method definitions vs. call sites via regex heuristics per language. Store definitions in a weighted FTS5 column (or separate table) so `def draw` scores higher than `ax.draw()`. This is the one language-level tuning that would meaningfully improve search precision — but only as an optional opt-in, never as a core dependency. Candidates: Python (def/class), JS/TS (function/class), Go (func/type), Rust (fn/struct/impl). Without AST/tree-sitter, this would use line-prefix patterns (e.g., `^\s*def\s+` in Python) approximated by regex, accepting ~95% accuracy for zero-dependency operation.
 - **Semantic search**: Optional embedding-based hybrid ranking for concept-level queries
 - **Cross-file dependency tracking**: Follow `dependencies` / `used_by` chains in search results
 - **Language-specific extractors**: Optional tree-sitter plug-ins for deeper analysis
