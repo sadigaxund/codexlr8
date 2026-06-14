@@ -1,5 +1,6 @@
 """CodeXLR8 CLI — search-first codebase navigation for agents."""
 
+import asyncio
 import click
 
 from .config import load_config
@@ -155,76 +156,112 @@ def status(project_path: str):
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False), default=".")
 def setup(project_path: str):
-    """Interactively create a .codexlr8.yaml configuration file."""
-    import os
-    import yaml
+    """Interactively create a .codexlr8.yaml configuration file.
 
-    config_path = os.path.join(project_path, ".codexlr8.yaml")
+    Also detects MCP clients and offers to inject the server config.
+    """
+    import os
+    import json
+    import yaml
+    import sys
 
     click.echo()
     click.secho("  ╔══════════════════════════════════════════╗", fg="cyan")
-    click.secho("  ║       CodeXLR8  —  Project Setup         ║", fg="cyan", bold=True)
+    click.secho("  ║       CodeXLR8  —  Setup                 ║", fg="cyan", bold=True)
     click.secho("  ╚══════════════════════════════════════════╝", fg="cyan")
     click.echo()
+
+    # ---- Phase 1: MCP client detection and injection ----
+    mcp_config = {
+        "mcpServers": {
+            "codexlr8": {
+                "command": "uvx",
+                "args": ["codexlr8", "mcp-server"],
+            }
+        }
+    }
+    mcp_json = json.dumps(mcp_config, indent=2)
+
+    clients = {
+        "Claude Code": os.path.expanduser("~/.claude/claude.json"),
+        "Cursor": os.path.expanduser("~/.cursor/mcp.json"),
+    }
+
+    detected = {name: path for name, path in clients.items() if os.path.exists(path)}
+
+    if detected:
+        click.secho("  ▸ MCP Clients Detected", fg="green", bold=True)
+        for name, path in detected.items():
+            click.echo(f"    [✓] {name}  ({path})")
+
+        click.echo()
+        for name, path in detected.items():
+            if click.confirm(click.style(f"  Inject CodeXLR8 into {name}?", fg="yellow")):
+                _inject_mcp_config(path, mcp_json)
+                click.secho(f"    ✓  Injected into {os.path.basename(path)}", fg="green")
+
+        click.echo()
+        click.secho("  CodeXLR8 MCP server is now configured.", fg="cyan")
+        click.secho("  Restart your MCP client to activate the tools.", dim=True)
+        click.echo()
+    else:
+        click.secho("  ▸ No MCP clients detected.", dim=True)
+        click.echo()
+        click.echo("  To manually configure an MCP client, add this to its config file:")
+        click.echo()
+        click.echo(mcp_json)
+        click.echo()
+        if not click.confirm(click.style("  Continue with project config?", fg="yellow")):
+            click.secho("  Done. Run 'codexlr8 setup' again later if needed.", fg="cyan")
+            return
+
+    # ---- Phase 2: Project config ----
+    config_path = os.path.join(project_path, ".codexlr8.yaml")
 
     if os.path.exists(config_path):
         if not click.confirm(
             click.style("  .codexlr8.yaml already exists. Overwrite?", fg="yellow")
         ):
-            click.secho("  Aborted.", fg="red")
+            click.secho("  Skipped project config.", fg="cyan")
             return
 
+    click.secho("  ▸ Project Config", fg="green", bold=True)
     click.secho("  Press Enter to accept defaults, or type your own values.", dim=True)
     click.echo()
 
-    # Root
-    click.secho("  ▸ Project Root", fg="green", bold=True)
-    click.echo("    The directory to scan from (relative to this location).")
     root = click.prompt(
         click.style("    Root", fg="bright_white"), default="."
     ).strip() or "."
     click.echo()
 
-    # Include
-    click.secho("  ▸ Include Patterns", fg="green", bold=True)
-    click.echo("    Only scan files matching these globs. Leave empty to scan everything.")
     custom_include = click.prompt(
-        click.style("    Include", fg="bright_white"), default=""
+        click.style("    Include (comma-separated, empty = all)", fg="bright_white"), default=""
     ).strip()
     include = [p.strip() for p in custom_include.split(",") if p.strip()]
     click.echo()
 
-    # Exclude
-    click.secho("  ▸ Exclude Patterns", fg="green", bold=True)
-    click.echo("    Skip files matching these globs during indexing and search.")
     defaults = ["tests/*", "test/*", "spec/*", "__tests__/*", "test_*", "*_test.*"]
     custom_exclude = click.prompt(
-        click.style("    Exclude", fg="bright_white"),
+        click.style("    Exclude (comma-separated)", fg="bright_white"),
         default=", ".join(defaults),
     ).strip()
     exclude = [p.strip() for p in custom_exclude.split(",") if p.strip()] if custom_exclude else defaults
     click.echo()
 
-    # Extensions
-    click.secho("  ▸ File Extensions", fg="green", bold=True)
-    click.echo("    Which file types to index. Defaults cover most programming languages.")
     ext_defaults = [".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".rb",
                     ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".swift",
                     ".kt", ".sql", ".sh", ".lua"]
     custom_ext = click.prompt(
-        click.style("    Extensions", fg="bright_white"),
+        click.style("    Extensions (comma-separated)", fg="bright_white"),
         default=", ".join(ext_defaults),
     ).strip()
     extensions = [p.strip() for p in custom_ext.split(",") if p.strip()] if custom_ext else ext_defaults
     click.echo()
 
-    # Ignore dirs
-    click.secho("  ▸ Ignored Directories", fg="green", bold=True)
-    click.echo("    Directories to skip entirely (build artifacts, caches, dependencies).")
     ig_defaults = [".git", "__pycache__", "node_modules", ".venv", "venv",
                    ".tox", ".mypy_cache", ".pytest_cache", "dist", "build"]
     custom_ig = click.prompt(
-        click.style("    Ignore", fg="bright_white"),
+        click.style("    Ignore dirs (comma-separated)", fg="bright_white"),
         default=", ".join(ig_defaults),
     ).strip()
     ignore_dirs = [p.strip() for p in custom_ig.split(",") if p.strip()] if custom_ig else ig_defaults
@@ -248,4 +285,231 @@ def setup(project_path: str):
             yaml.dump(config, f, default_flow_style=False)
         click.secho(f"  ✓  Wrote {config_path}", fg="green")
     else:
-        click.secho("  Aborted.", fg="red")
+        click.secho("  Skipped.", dim=True)
+
+    # ---- Phase 3: Agent skill ----
+    click.echo()
+    click.secho("  ▸ Agent Skill", fg="green", bold=True)
+    skill_dir = os.path.expanduser("~/.claude/skills/codexlr8")
+    skill_path = os.path.join(skill_dir, "SKILL.md")
+
+    if os.path.exists(skill_path):
+        click.echo(f"    Skill already installed: {skill_path}")
+    elif click.confirm(click.style("  Install agent skill for Claude Code?", fg="yellow")):
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(skill_path, "w") as f:
+            f.write(_SKILL_CONTENT)
+        click.secho(f"    ✓  Installed to {skill_path}", fg="green")
+
+    click.echo()
+    click.secho("  Setup complete.", fg="cyan", bold=True)
+    click.secho("  Run 'codexlr8 index .' to build your first search index.", dim=True)
+
+
+def _inject_mcp_config(config_path: str, mcp_json: str) -> None:
+    """Inject the CodeXLR8 MCP config into an existing client config file.
+
+    If the file contains valid JSON with an 'mcpServers' key, merge.
+    Otherwise, write fresh.
+    """
+    import json
+    import os
+
+    existing: dict = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    if "mcpServers" not in existing:
+        existing["mcpServers"] = {}
+
+    if "codexlr8" in existing.get("mcpServers", {}):
+        # Already present — skip
+        return
+
+    codexlr8_config = {"command": "uvx", "args": ["codexlr8", "mcp-server"]}
+    existing["mcpServers"]["codexlr8"] = codexlr8_config
+
+    with open(config_path, "w") as f:
+        json.dump(existing, f, indent=2)
+        f.write("\n")
+
+
+@main.command()
+def mcp_config():
+    """Print the MCP client config JSON for Claude Code / other clients."""
+    import json
+
+    config = {
+        "mcpServers": {
+            "codexlr8": {
+                "command": "uvx",
+                "args": ["codexlr8", "mcp-server"],
+            }
+        }
+    }
+    click.echo()
+    click.secho("  Add this to your MCP client config:", fg="cyan")
+    click.echo("  (Claude Code: ~/.claude/claude.json, Cursor: .cursor/mcp.json)")
+    click.echo()
+    click.echo(json.dumps(config, indent=2))
+    click.echo()
+    click.echo(
+        "  Works with any MCP client: Claude Code, Cursor, Windsurf, "
+        "Continue.dev, custom agents."
+    )
+
+
+@main.command(name="mcp-server")
+def mcp_server_cmd():
+    """Start the CodeXLR8 MCP server (for use with uvx / MCP clients)."""
+
+    from .mcp_server import _run
+    asyncio.run(_run())
+
+
+@main.command()
+def install_skill():
+    """Install the CodeXLR8 agent skill into ~/.claude/skills/."""
+    import os
+
+    skill_dir = os.path.expanduser("~/.claude/skills/codexlr8")
+    os.makedirs(skill_dir, exist_ok=True)
+    dest = os.path.join(skill_dir, "SKILL.md")
+
+    with open(dest, "w") as f:
+        f.write(_SKILL_CONTENT)
+
+    click.secho(f"  ✓  Installed skill to {dest}", fg="green")
+
+
+_SKILL_CONTENT = r"""# CodeXLR8 — Agent Search Skill
+
+You have access to a codebase search engine called CodeXLR8. It is a purpose-built search index for this codebase. Use it **before** reading any files to find the right code.
+
+## When to search
+
+- **Before any file read** — if a task mentions a feature, concept, or bug (e.g. "fix the login bug", "add refund to payments", "how does checkout work"), search first.
+- **When you're lost** — if you don't know which file or module handles a responsibility, search.
+- **Before grep or ls** — CodeXLR8 replaces directory listing and text search. One query is cheaper and more precise than `ls` + `grep`.
+
+## How to search
+
+Use `codebase_search` with the key nouns and terms from the task description:
+
+```
+codebase_search(query="login auth")
+codebase_search(query="stripe charge customer refund")
+codebase_search(query="shopping cart checkout payment")
+```
+
+Describe what you're looking for in natural language. The engine uses AND semantics — more terms increase precision, not noise.
+
+## Interpreting results
+
+Results include:
+
+| Field | Meaning |
+|---|---|
+| `path:line-line` | File and line range where the match lives |
+| `score` | Relevance (higher = better) |
+| `summary` | Human-written description of the file's purpose |
+| `tags` | Curated keywords (auth, payment, cart, etc.) |
+| `preview` | First ~10 lines around the best match |
+
+**Ranking:** Files with curated `.meta.yaml` (summary + tags) rank highest. Raw content matches rank lower. `__init__.py` re-exports are penalized.
+
+## Maintaining the index
+
+### Session start — check health
+
+At the start of every session, run:
+
+```
+codebase_index(path=".")
+```
+
+This builds the index if it doesn't exist, or is a no-op if it's fresh. If the index is stale (older than the latest commit), consider:
+
+```
+codebase_index(path=".", incremental=true)
+```
+
+### After making changes
+
+After you modify files, update the index so your next search reflects the changes:
+
+```
+codebase_index(path=".", incremental=true)
+```
+
+Run this once per session when you're done editing, not after every single file.
+
+## Maintaining .meta.yaml sidecars
+
+### Checking coverage
+
+Run `codexlr8 status .` (via shell) to see coverage:
+
+```
+Files indexed: 42
+Files with .meta.yaml: 15
+Files without .meta.yaml: 27
+```
+
+If more than 50% of indexed files lack a `.meta.yaml`, run `codexlr8 init .` to bootstrap the missing ones.
+
+### Filling in metadata
+
+After modifying a file, check its `.meta.yaml` sidecar and update:
+
+- **`summary`** — one sentence describing the file's purpose. Be specific: "User authentication: login, logout, password reset, session creation" not just "auth stuff".
+- **`tags`** — 2-5 keywords for the module's domain: `[auth, login, session, security]`.
+- **`public_api`** — list of exported function/class names. Update when you add or remove exports.
+- **`invariants`** — any contract the caller must uphold: "db.connect() must be called first".
+
+Example before:
+```yaml
+public_api: []
+dependencies: []
+used_by: []
+summary: ""
+tags: []
+```
+
+Example after:
+```yaml
+public_api: [login, logout, reset_password]
+dependencies: [models.user, utils.hashing, utils.db]
+used_by: [main, api.auth_routes]
+summary: "User authentication: login, logout, password reset, session creation"
+tags: [auth, login, session, security]
+invariants:
+  - "Passwords are always bcrypt-hashed before storage"
+```
+
+**Only curate files you actually touch.** Don't try to backfill the entire codebase.
+
+## Excluding files
+
+By default, test files (`tests/`, `test_*`, `*_test.*`), spec files, and vendored code are excluded from search results. Use `exclude` to filter more:
+
+```
+codebase_search(query="auth", exclude=["vendor/*", "migrations/*"])
+```
+
+Exclude patterns are globs that match file paths. Use `*` for wildcards.
+
+## Quick reference
+
+| Task | Tool call |
+|---|---|
+| Find code for a feature | `codebase_search(query="...")` |
+| Build/update index | `codebase_index(incremental=true)` |
+| Check metadata coverage | Shell: `codexlr8 status .` |
+| Bootstrap missing sidecars | Shell: `codexlr8 init .` |
+| Rebuild full index | Shell: `codexlr8 index .` |
+"""

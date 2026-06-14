@@ -40,3 +40,4 @@ jobs:
           name: CodeXLR8 ${{ steps.changelog.outputs.tag }}
           body_path: release-body.md
           draft: false
+          files: dist/*
