@@ -62,11 +62,13 @@ def scan(project_path: str, output: str | None):
 @click.argument("query")
 @click.option("--exclude", "-x", "exclude_patterns", multiple=True,
               callback=_parse_excludes, help=EXCLUDE_HELP)
+@click.option("--scope", "-s", default=None,
+              help="Restrict search to files under a path prefix (e.g. src/ or lib/mpl_toolkits/)")
 @click.option("--format", "-f", "output_format",
               type=click.Choice(["text", "json"]), default="text")
 @click.option("--limit", "-n", default=10, help="Maximum number of results")
 def search(project_path: str, query: str, exclude_patterns: list[str],
-           output_format: str, limit: int):
+           scope: str | None, output_format: str, limit: int):
     """Search the codebase for code matching QUERY.
 
     PROJECT_PATH is the root directory of the codebase to search.
@@ -76,9 +78,10 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
       codexlr8 search . "login auth"
       codexlr8 search . "login auth" --exclude "tests/*"
       codexlr8 search . "login auth" -x "tests/*" -x "vendor/*"
+      codexlr8 search . "get_visible" --scope lib/mpl_toolkits/
     """
     engine = SearchEngine(project_path)
-    results = engine.search(query, limit=limit, exclude=exclude_patterns)
+    results = engine.search(query, limit=limit, exclude=exclude_patterns, scope=scope)
 
     if output_format == "json":
         import json
@@ -508,6 +511,7 @@ Exclude patterns are globs that match file paths. Use `*` for wildcards.
 | Task | Tool call |
 |---|---|
 | Find code for a feature | `codebase_search(query="...")` |
+| Search within a directory | `codebase_search(query="...", scope="src/")` |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |

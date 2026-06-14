@@ -70,3 +70,29 @@ class TestMCPServerLogic:
         results = engine.search("login")
         assert len(results) > 0
         assert "main.py" in results[0]["path"]
+
+    def test_search_with_scope(self, tmp_path):
+        """Scope parameter restricts search to a path prefix."""
+        project = tmp_path / "proj"
+        src_dir = project / "src"
+        lib_dir = project / "lib"
+        src_dir.mkdir(parents=True)
+        lib_dir.mkdir(parents=True)
+
+        (src_dir / "auth.py").write_text("def login(): pass\n")
+        (lib_dir / "auth.py").write_text("def login(): pass\n")
+
+        engine = SearchEngine(str(project))
+        engine.build_index()
+
+        # Without scope: both files match
+        results = engine.search("login")
+        paths = {r["path"] for r in results}
+        assert "src/auth.py" in paths
+        assert "lib/auth.py" in paths
+
+        # With scope: only src/ files
+        results = engine.search("login", scope="src")
+        paths = {r["path"] for r in results}
+        assert "src/auth.py" in paths
+        assert "lib/auth.py" not in paths

@@ -105,21 +105,32 @@ invariants:
 
 **Only curate files you actually touch.** Don't try to backfill the entire codebase.
 
-## Excluding files
+## Excluding files and scoping search
 
-By default, test files (`tests/`, `test_*`, `*_test.*`), spec files, and vendored code are excluded from search results. Use `exclude` to filter more:
+By default, test files (`tests/`, `test_*`, `*_test.*`), spec files, and vendored code are excluded from search results.
 
+### Exclude patterns
+
+Use `exclude` to filter out more files:
 ```
-codebase_search(query="auth", path=".", exclude=["vendor/*", "migrations/*"])
+codebase_search(query="auth", exclude=["vendor/*", "migrations/*"])
 ```
+Exclude patterns are globs that match file paths. Use `*` for wildcards.
 
-Exclude patterns are globs that match file paths. Use `*` for wildcards, avoid `**` unless you have deeply nested directories.
+### Directory scoping
+
+When you know which directory contains the relevant code (e.g. a bug is in the 3D plotting library), use `scope` to restrict the search:
+```
+codebase_search(query="get_visible", scope="lib/mpl_toolkits/")
+```
+This is equivalent to `grep -rn "pattern" directory/`. The scope filter is applied before scoring, making it far more efficient than post-hoc exclude patterns.
 
 ## Quick reference
 
 | Task | Tool call |
 |---|---|
 | Find code for a feature | `codebase_search(query="...")` |
+| Search within a directory | `codebase_search(query="...", scope="src/")` |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |

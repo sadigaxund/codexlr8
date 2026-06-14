@@ -61,6 +61,12 @@ async def list_tools() -> list[Tool]:
                         "description": "Glob patterns for files to exclude. "
                                        "Uses .codexlr8.yaml defaults if not set.",
                     },
+                    "scope": {
+                        "type": "string",
+                        "description": "Restrict search to files under a path prefix "
+                                       "(e.g. 'src/' or 'lib/mpl_toolkits/'). "
+                                       "Acts as grep -rn's directory filter.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -111,9 +117,10 @@ async def _handle_search(args: dict) -> list[TextContent]:
     query = args["query"]
     limit = args.get("limit", 10)
     exclude = args.get("exclude")
+    scope = args.get("scope")
 
     engine = SearchEngine(project_path)
-    results = engine.search(query, limit=limit, exclude=exclude)
+    results = engine.search(query, limit=limit, exclude=exclude, scope=scope)
 
     if not results:
         return [TextContent(type="text", text="No results found.")]

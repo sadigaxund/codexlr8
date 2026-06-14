@@ -212,12 +212,15 @@ class SearchEngine:
         )
 
     def search(self, query: str, limit: int = 10,
-               exclude: list[str] | None = None) -> list[dict]:
+               exclude: list[str] | None = None,
+               scope: str | None = None) -> list[dict]:
         """Search the codebase and return ranked results.
 
         Uses AND semantics: all query tokens must match (like Google).
         Falls back to OR if AND returns nothing, with a post-filter
         requiring at least 50% of query tokens to match the document.
+
+        scope: optional path prefix to restrict search to (e.g. "src/", "lib/mpl_toolkits/")
         """
         if not os.path.exists(self.db_path):
             return []
@@ -231,6 +234,15 @@ class SearchEngine:
 
         conn = self._get_connection()
 
+        # Build scope clause for path-prefix filtering
+        scope_clause = ""
+        scope_params: list[str] = []
+        if scope:
+            # Normalize: strip trailing slashes, ensure single wildcard
+            scope_norm = scope.rstrip("/")
+            scope_clause = "AND f.path LIKE ?"
+            scope_params = [scope_norm + "/%"]
+
         # Stage 1: try AND (best precision)
         and_query = " AND ".join(tokens)
         cursor = conn.execute(
@@ -239,9 +251,10 @@ class SearchEngine:
             "FROM files f "
             "JOIN file_meta m ON f.path = m.path "
             "WHERE files MATCH ? "
+            + scope_clause + " "
             "ORDER BY rank "
             "LIMIT ?",
-            (and_query, limit * 5),
+            [and_query] + scope_params + [limit * 5],
         )
         rows = cursor.fetchall()
 
@@ -254,9 +267,10 @@ class SearchEngine:
                 "FROM files f "
                 "JOIN file_meta m ON f.path = m.path "
                 "WHERE files MATCH ? "
+                + scope_clause + " "
                 "ORDER BY rank "
                 "LIMIT ?",
-                (or_query, limit * 10),
+                [or_query] + scope_params + [limit * 10],
             )
             rows = cursor.fetchall()
 
