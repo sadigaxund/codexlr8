@@ -135,6 +135,8 @@ async def _handle_search(args: dict) -> list[TextContent]:
             lines.append(f"   summary: {r['summary']}")
         if r.get("tags"):
             lines.append(f"   tags: {', '.join(r['tags'])}")
+        if r.get("matched_tokens"):
+            lines.append(f"   matched: {', '.join(r['matched_tokens'])}")
         if r.get("preview"):
             lines.append("   preview: |")
             for pline in r["preview"].strip().splitlines()[:6]:

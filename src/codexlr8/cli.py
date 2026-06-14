@@ -99,6 +99,8 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
             click.echo(f"   meta:   {r['summary']}")
         if r.get("tags"):
             click.echo(f"   tags:   {', '.join(r['tags'])}")
+        if r.get("matched_tokens"):
+            click.echo(f"   matched: {', '.join(r['matched_tokens'])}")
         if r.get("preview"):
             click.echo("   preview: |")
             for line in r["preview"].strip().splitlines()[:6]:
@@ -426,9 +428,10 @@ Results include:
 | `score` | Relevance (higher = better) |
 | `summary` | Human-written description of the file's purpose |
 | `tags` | Curated keywords (auth, payment, cart, etc.) |
+| `matched` | Which query tokens the file matched — use this to debug failed searches |
 | `preview` | First ~10 lines around the best match |
 
-**Ranking:** Files with curated `.meta.yaml` (summary + tags) rank highest. Raw content matches rank lower. `__init__.py` re-exports are penalized.
+**Ranking:** Files with curated `.meta.yaml` (summary + tags) rank highest, followed by filename matches, then path directory matches. Raw content matches rank lowest. `__init__.py` re-exports are penalized.
 
 ## Maintaining the index
 

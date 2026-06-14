@@ -27,6 +27,17 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if len(t) > 1 or t.isdigit()]  # skip single letters
 
 
+def _token_match_info(tokens: list[str], content: str, row) -> tuple[list[str], float]:
+    """Return which query tokens matched and the match ratio."""
+    if not tokens:
+        return [], 0.0
+    summary = (row["summary"] or "") if row["summary"] else ""
+    tags = (row["tags"] or "") if row["tags"] else ""
+    text_lower = (content + " " + summary + " " + tags).lower()
+    matched = [t for t in tokens if t in text_lower]
+    return matched, len(matched) / len(tokens)
+
+
 def _token_match_ratio(tokens: list[str], text: str) -> float:
     """What fraction of query tokens appear in the document text?"""
     if not tokens:
@@ -271,7 +282,8 @@ class SearchEngine:
                 continue
 
             content = row["content"] or ""
-            ratio = _token_match_ratio(tokens, content + (row["summary"] or "") + (row["tags"] or ""))
+            # Compute which tokens matched and the ratio
+            matched, ratio = _token_match_info(tokens, content, row)
             if ratio < min_ratio:
                 continue
 
@@ -284,6 +296,7 @@ class SearchEngine:
                 "tags": (row["tags"] or "").split(),
                 "public_api": row["public_api"] or "",
                 "score": score,
+                "matched_tokens": matched,
             })
 
         conn.close()
