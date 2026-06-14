@@ -7,7 +7,7 @@ import click
 from .config import load_config
 from .scanner import scan_project
 from .meta import generate_missing_sidecars
-from .search import SearchEngine, _group_results
+from .search import SearchEngine, _group_results, _explain_query, _tokenize
 
 
 EXCLUDE_HELP = (
@@ -67,13 +67,15 @@ def scan(project_path: str, output: str | None):
               help="Restrict search to files under a path prefix (e.g. src/ or lib/mpl_toolkits/)")
 @click.option("--grouped", "-g", is_flag=True, default=False,
               help="Cluster results by directory before listing files")
+@click.option("--explain", "-e", is_flag=True, default=False,
+              help="Show token breakdown and query diagnostics")
 @click.option("--group-depth", default=3,
               help="Max directory depth for grouping (default: 3)")
 @click.option("--format", "-f", "output_format",
               type=click.Choice(["text", "json"]), default="text")
 @click.option("--limit", "-n", default=10, help="Maximum number of results")
 def search(project_path: str, query: str, exclude_patterns: list[str],
-           scope: str | None, grouped: bool, group_depth: int,
+           scope: str | None, grouped: bool, explain: bool, group_depth: int,
            output_format: str, limit: int):
     """Search the codebase for code matching QUERY.
 
@@ -83,6 +85,7 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
     Examples:
       codexlr8 search . "login auth"
       codexlr8 search . "login auth" --grouped
+      codexlr8 search . "login auth" --explain
       codexlr8 search . "login auth" --exclude "tests/*"
       codexlr8 search . "login auth" -x "tests/*" -x "vendor/*"
       codexlr8 search . "get_visible" --scope lib/mpl_toolkits/
@@ -92,25 +95,38 @@ def search(project_path: str, query: str, exclude_patterns: list[str],
 
     if output_format == "json":
         import json
+        output = {"results": results}
+        if explain:
+            output["explain"] = _explain_query(query, _tokenize(query), results)
         if grouped:
             groups_data = _group_results(results, group_depth)
-            click.echo(json.dumps({
-                "grouped": True,
-                "groups": groups_data["groups"],
-                "summary": {
-                    "total_results": groups_data["total_results"],
-                    "total_files": groups_data["total_files"],
-                    "total_groups": len(groups_data["groups"]),
-                },
-                "results": results,
-            }, indent=2))
-        else:
-            click.echo(json.dumps(results, indent=2))
+            output["grouped"] = True
+            output["groups"] = groups_data["groups"]
+            output["summary"] = {
+                "total_results": groups_data["total_results"],
+                "total_files": groups_data["total_files"],
+                "total_groups": len(groups_data["groups"]),
+            }
+        click.echo(json.dumps(output, indent=2))
         return
 
     if not results:
         click.echo("No results found.")
+        if explain:
+            tokens = _tokenize(query)
+            click.echo()
+            click.echo("Query analysis:")
+            for t in tokens:
+                click.echo(f"  \"{t}\"  \u2717 no matches")
+            click.echo()
+            click.echo("0 tokens matched. All terms are absent from the codebase.")
         return
+
+    if explain:
+        tokens = _tokenize(query)
+        explain_data = _explain_query(query, tokens, results)
+        _print_explain(explain_data)
+        click.echo()
 
     if grouped:
         _print_grouped(results, group_depth, scope)
@@ -340,6 +356,51 @@ def setup(project_path: str):
     click.secho("  Run 'codexlr8 index .' to build your first search index.", dim=True)
 
 
+def _print_explain(data: dict):
+    """Print query diagnostic breakdown."""
+    click.secho("Query analysis:", fg="cyan", bold=True)
+    click.echo(f"  Original:  \"{data['query']}\"")
+    click.echo(f"  Tokens:    {', '.join(data['tokens'])}")
+    click.echo()
+
+    for token in data["tokens"]:
+        hits = data["token_hits"].get(token, 0)
+        total = data["total_results"]
+        if hits == 0:
+            status = click.style(f"{hits} matches", fg="red")
+            hint = " — consider dropping or replacing"
+        elif hits <= 3:
+            status = click.style(f"{hits} matches", fg="yellow")
+            hint = " — very specific"
+        elif hits <= total * 0.1:
+            status = click.style(f"{hits} matches", fg="green")
+            hint = ""
+        else:
+            status = click.style(f"{hits} matches", fg="yellow")
+            hint = f" — broad term ({hits}/{total} results)"
+
+        click.echo(f"  \"{token}\"  {status}{hint}")
+
+    for fw in data["filtered"]:
+        click.echo(f"  \"{fw}\"  {click.style('filtered', fg='yellow')} — single letter, ignored")
+
+    click.echo()
+    top = data["top_score"]
+    if top < 0.60:
+        quality = click.style("weak", fg="red")
+    elif top < 1.20:
+        quality = click.style("moderate", fg="yellow")
+    else:
+        quality = click.style("strong", fg="green")
+    click.echo(f"  Top score: {top} ({quality} match)")
+
+    if data["filtered"]:
+        click.echo(click.style("  Tip:", dim=True) + " single-letter words are ignored. Use full terms.")
+    zero_match = [t for t in data["tokens"] if data["token_hits"].get(t, 0) == 0]
+    if zero_match:
+        click.echo(click.style("  Tip:", dim=True) + f" \"{zero_match[0]}\" doesn't exist — try a synonym or drop it.")
+
+
 def _print_grouped(results: list[dict], group_depth: int, scope: str | None):
     """Print search results clustered by directory."""
     groups_data = _group_results(results, group_depth)
@@ -529,6 +590,14 @@ This prints directories ranked by their highest-scoring file, with a `--scope` h
 
 Check the `matched` field on each result. If a file you expected isn't showing, the missing token tells you what to adjust. If all results only match 1 of 4 tokens, your terms are too scattered — try removing one.
 
+For deeper diagnostics, run:
+
+```bash
+codexlr8 search . "your query" --explain
+```
+
+This shows per-token hit counts and flags zero-match terms so you can refine before calling `codebase_search` again.
+
 ## Interpreting results
 
 Results include:
@@ -632,6 +701,7 @@ Exclude patterns are globs that match file paths. Use `*` for wildcards.
 | Find code for a feature | `codebase_search(query="...")` |
 | Search within a directory | `codebase_search(query="...", scope="src/")` |
 | Cluster results by directory | Shell: `codexlr8 search . "query" --grouped` |
+| Diagnose query terms | Shell: `codexlr8 search . "query" --explain` |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |

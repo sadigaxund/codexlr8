@@ -55,6 +55,14 @@ codexlr8 search . "get_visible" --grouped
 #     ─ axes3d.py:388  [score: 0.90]
 #     ...
 
+# Diagnose your query — see which terms hit, which don't
+codexlr8 search . "axes not hiding" --explain
+# Query analysis:
+#   "axes"    212 matches  — broad term (212/212 results)
+#   "not"     77 matches
+#   "hiding"  0 matches    — consider dropping or replacing
+#   Top score: 1.20 (strong match)
+
 # Combine both — group, then scope to drill down
 ```
 

@@ -56,6 +56,14 @@ This prints directories ranked by their highest-scoring file, with a `--scope` h
 
 Check the `matched` field on each result. If a file you expected isn't showing, the missing token tells you what to adjust. If all results only match 1 of 4 tokens, your terms are too scattered — try removing one.
 
+For deeper diagnostics, run:
+
+```bash
+codexlr8 search . "your query" --explain
+```
+
+This shows per-token hit counts and flags zero-match terms so you can refine before calling `codebase_search` again.
+
 ## Interpreting results
 
 Results include:
@@ -169,6 +177,7 @@ This is equivalent to `grep -rn "pattern" directory/`. The scope filter is appli
 | Find code for a feature | `codebase_search(query="...")` |
 | Search within a directory | `codebase_search(query="...", scope="src/")` |
 | Cluster results by directory | Shell: `codexlr8 search . "query" --grouped` |
+| Diagnose query terms | Shell: `codexlr8 search . "query" --explain` |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |

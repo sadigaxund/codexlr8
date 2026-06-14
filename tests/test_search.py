@@ -2,7 +2,7 @@
 
 import json
 
-from codexlr8.search import SearchEngine, _is_init_file, _tokenize, _matches_exclude, _group_results
+from codexlr8.search import SearchEngine, _is_init_file, _tokenize, _matches_exclude, _group_results, _explain_query
 
 
 class TestHelpers:
@@ -87,6 +87,24 @@ class TestHelpers:
         grouped = _group_results(results)
         assert grouped["groups"][0]["prefix"] == "src/high/"
         assert grouped["groups"][1]["prefix"] == "lib/low/"
+
+    def test_explain_query(self):
+        results = [
+            {"path": "auth/session.py", "score": 0.9, "summary": "auth module", "tags": ["login"]},
+            {"path": "auth/__init__.py", "score": 0.6, "summary": "", "tags": []},
+        ]
+        data = _explain_query("login auth x", ["login", "auth", "x"], results)
+        assert data["query"] == "login auth x"
+        assert data["token_hits"]["login"] == 1  # only session.py tags match
+        assert data["token_hits"]["auth"] == 2   # both files have "auth" in path
+        assert data["token_hits"]["x"] == 0      # zero matches
+        assert data["top_score"] == 0.9
+        assert data["filtered"] == []
+
+    def test_explain_query_filtered(self):
+        data = _explain_query("go API v2 a", ["go", "api", "v2"], [])
+        assert "a" in data["filtered"]
+        assert data["token_hits"] == {"go": 0, "api": 0, "v2": 0}
 
 
 class TestSearchEngine:
@@ -213,10 +231,13 @@ class TestSearchEngine:
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert isinstance(data, list)
-        if data:
-            assert "path" in data[0]
-            assert "score" in data[0]
+        assert isinstance(data, dict)
+        assert "results" in data
+        results_list = data["results"]
+        assert isinstance(results_list, list)
+        if results_list:
+            assert "path" in results_list[0]
+            assert "score" in results_list[0]
 
     def test_search_cli_exclude_flag(self, sample_project):
         from click.testing import CliRunner
@@ -250,6 +271,23 @@ class TestSearchEngine:
         # Should show directory groupings and the scope hint
         assert "Use --scope" in result.output
         assert "(" in result.output  # file count per dir
+
+
+    def test_search_cli_explain(self, sample_project):
+        from click.testing import CliRunner
+        from codexlr8.cli import search
+
+        engine = SearchEngine(str(sample_project))
+        engine.build_index()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            search, [str(sample_project), "login", "--explain"]
+        )
+        assert result.exit_code == 0
+        assert "Query analysis" in result.output
+        assert '"login"' in result.output
+        assert "matches" in result.output
 
 
 class TestCLIIndexAndStatus:

@@ -181,6 +181,45 @@ The MCP server runs as a subprocess and communicates over stdio per the Model Co
 
 ## Search Result Clustering
 
+...
+
+## Query Diagnostics (`--explain`)
+
+The `--explain` / `-e` flag surfaces the engine's internal query processing to the agent. Instead of guessing why search failed, the agent sees:
+
+```
+$ codexlr8 search . "3d axes not hiding" --explain
+
+Query analysis:
+  Original:  "3d axes not hiding"
+  Tokens:    3d, axes, not, hiding
+
+  "3d"      6 matches    — very specific
+  "axes"    212 matches  — broad term (212/212 results)
+  "not"     77 matches
+  "hiding"  0 matches    — consider dropping or replacing
+
+  Top score: 1.20 (strong)
+  Tip: "hiding" doesn't exist — try a synonym or drop it.
+```
+
+### What it shows
+
+| Diagnostic | Source | Agent action |
+|---|---|---|
+| Per-token hit count | Token presence in results (path + summary + tags) | Drop noisy terms, keep specific ones |
+| Zero-match tokens | Token not found in any result | Replace with synonyms or drop entirely |
+| Filtered words | Single-letter words removed by tokenizer | Use full terms |
+| Top score | Max result score | Confidence signal: am I getting quality hits? |
+
+### What it doesn't do
+
+- No auto-suggestions — the LLM agent knows the task context and is better at choosing replacements
+- No confidence thresholds — what's "strong" varies by codebase metadata coverage
+- No per-file token breakdown — use `matched_tokens` on individual results for that
+
+## Search Result Clustering
+
 The CLI supports an optional `--grouped` / `-g` flag that clusters flat search results by directory prefix before displaying them. This gives agents the same narrowing signal that `grep | awk | sort | uniq -c` gives human grep users.
 
 ### Format

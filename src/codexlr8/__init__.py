@@ -1,3 +1,3 @@
 """CodeXLR8 — A codebase search engine for LLM coding agents."""
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"

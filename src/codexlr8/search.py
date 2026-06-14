@@ -27,6 +27,43 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if len(t) > 1 or t.isdigit()]  # skip single letters
 
 
+def _explain_query(query: str, tokens: list[str], results: list[dict]) -> dict:
+    """Generate query diagnostic breakdown for --explain.
+
+    Returns per-token hit counts, filtered words, top score — gives
+    the agent the data it needs to course-correct a search query.
+    """
+    # Detect words in original query that were filtered by the tokenizer
+    raw_lower = query.lower()
+    raw_words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*|\d+", raw_lower)
+    filtered = [w for w in raw_words if w not in tokens and len(w) == 1]
+
+    # Per-token hit counts across all results
+    token_hits: dict[str, int] = {}
+    for token in tokens:
+        count = 0
+        for r in results:
+            text = (
+                (r.get("summary") or "") + " " +
+                " ".join(r.get("tags", [])) + " " +
+                r.get("path", "")
+            ).lower()
+            if token in text:
+                count += 1
+        token_hits[token] = count
+
+    top_score = max((r["score"] for r in results), default=0.0)
+
+    return {
+        "query": query,
+        "tokens": tokens,
+        "token_hits": token_hits,
+        "filtered": filtered,
+        "total_results": len(results),
+        "top_score": round(top_score, 2),
+    }
+
+
 def _token_match_info(tokens: list[str], content: str, row) -> tuple[list[str], float]:
     """Return which query tokens matched and the match ratio."""
     if not tokens:
