@@ -305,16 +305,26 @@ class SearchEngine:
         """Compute relevance score.
 
         Core ranking: BM25 from FTS5 (via 'rank') provides the base score.
-        On top of that:
+        On top of that, a weighted token-count:
         - Metadata boost: public_api (1.0) > tags (0.8) > summary (0.6)
+        - Path boost: exact filename (0.8), filename component (0.7), dir (0.5)
+        - Content match: 0.3 (base weight, only if nothing above matched)
         - Match ratio: fraction of query tokens found in the document
         - init.py penalty: 0.6x (applied in search())
         """
         score = 0.0
 
+        path = row.get("path", "")
         public_api = (row.get("public_api") or "").lower()
         summary = (row.get("summary") or "").lower()
         tags = (row.get("tags") or "").lower()
+
+        filename_lower = os.path.splitext(os.path.basename(path))[0].lower()
+        filename_parts = set(re.split(r'[_\-.]+', filename_lower))
+        dir_path = os.path.dirname(path).lower()
+        dir_tokens = set(_tokenize(dir_path.replace(os.sep, " ").replace("_", " ").replace("-", " ")))
+        # Also add dir path segments directly (e.g., "mplot3d" from "mplot3d/axes3d.py")
+        dir_tokens.update(re.split(r'[_\-.]+', dir_path.replace(os.sep, " ")))
 
         api_tokens = set(_tokenize(public_api))
         tag_tokens = set(tags.split())
@@ -325,10 +335,19 @@ class SearchEngine:
                 score += 1.0
             elif token in tag_tokens:
                 score += 0.8
+            elif token == filename_lower:
+                # Exact filename match: token IS the filename (axes3d.py for "axes3d")
+                score += 0.8
+            elif token in filename_parts:
+                # Token appears as a component in the filename (e.g. "axes3d" in "rotate_axes3d_sgskip.py")
+                score += 0.7
             elif token in summary_tokens:
                 score += 0.6
+            elif token in dir_tokens:
+                # Token appears in a directory name (e.g., "mplot3d" in path mplot3d/axes3d.py)
+                score += 0.5
             else:
-                # Content match via BM25 — base weight
+                # Content match via FTS5 — base weight
                 score += 0.3
 
         # Multiply by match ratio: files matching more query terms rank higher
