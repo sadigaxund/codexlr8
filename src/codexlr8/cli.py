@@ -595,6 +595,7 @@ Exclude patterns are globs that match file paths. Use `*` for wildcards.
 |---|---|
 | Find code for a feature | `codebase_search(query="...")` |
 | Search within a directory | `codebase_search(query="...", scope="src/")` |
+| Cluster results by directory | Shell: `codexlr8 search . "query" --grouped` |
 | Build/update index | `codebase_index(incremental=true)` |
 | Check metadata coverage | Shell: `codexlr8 status .` |
 | Bootstrap missing sidecars | Shell: `codexlr8 init .` |
